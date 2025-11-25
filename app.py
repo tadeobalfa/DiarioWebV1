@@ -39,12 +39,29 @@ def _strip_accents_lower(s: str) -> str:
     s = "".join(ch for ch in s if unicodedata.category(ch) != "Mn")
     return " ".join(s.lower().split())
 
+# Importante:
+# - NO incluimos "ingresos" acá para poder tratarlo aparte.
 BANNED_SECTION_LABELS = {
-    "activo", "pasivo", "patrimonio neto", "ingresos", "egresos", "total", "totales"
+    "activo", "pasivo", "patrimonio neto", "egresos", "total", "totales"
 }
 
 def is_banned_label(texto: str) -> bool:
-    return _strip_accents_lower(texto) in BANNED_SECTION_LABELS
+    """
+    Devuelve True si el texto es un título de sección que NO debe ir como cuenta.
+    Reglas:
+    - "INGRESOS" EXACTO (todo mayúsculas) se considera título y se excluye.
+    - "Ingresos", "ingresos", etc. SÍ se consideran cuentas y NO se excluyen.
+    - El resto de títulos (ACTIVO, PASIVO, PATRIMONIO NETO, EGRESOS, TOTAL, TOTALES)
+      se comparan de forma insensible a mayúsculas/minúsculas.
+    """
+    if texto is None:
+        return False
+    raw = str(texto).strip()
+    # Caso especial pedido: solo "INGRESOS" en mayúscula se excluye
+    if raw == "INGRESOS":
+        return True
+    # El resto se normaliza
+    return _strip_accents_lower(raw) in BANNED_SECTION_LABELS
 
 OPENING_COL_SYNS = {
     "saldo al inicio", "saldo inicial", "saldo inicio", "saldo de apertura", "saldo apertura"
@@ -342,7 +359,7 @@ def _marker_kind(ws, row_idx: int) -> str:
 
         hx1 = _normalize_hex_from_cell(tl)
         hx2 = _normalize_hex_from_cell(cell)
-        hx = (hx1 or hx2) or ""   # puede ser None si no tiene color
+        hx = (hx1 or hx2) or ""
 
         if (hx in YELLOW_ORANGE_HEXES) or (hx[-6:] in YELLOW_ORANGE_RGB):
             return 'include'
@@ -611,8 +628,11 @@ def _build_cierre_from_df(df: pd.DataFrame, account_col: str, reexp_col: str) ->
     df2 = df2.dropna(subset=[account_col], how="all")
     df2[account_col] = df2[account_col].astype(str).str.strip()
 
-    idx_ingresos = df2[df2[account_col].str.upper().str.fullmatch("INGRESOS")].index
-    idx_totales  = df2[df2[account_col].str.upper().str.startswith("TOTA")].index
+    # Usar SOLO "INGRESOS" exacto en mayúsculas como corte de sección
+    raw_cta = df2[account_col].astype(str).str.strip()
+    idx_ingresos = raw_cta[raw_cta == "INGRESOS"].index
+    idx_totales  = raw_cta[raw_cta.str.upper().str.startswith("TOTA")].index
+
     start_ingresos = idx_ingresos[0] if len(idx_ingresos)>0 else None
     start_totales  = idx_totales[0]  if len(idx_totales)>0 else len(df2)
 
@@ -794,3 +814,4 @@ if uploaded:
         st.error(f"Error procesando el archivo: {e}")
 else:
     st.info("Subí un Excel para comenzar.")
+
