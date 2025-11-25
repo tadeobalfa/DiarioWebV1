@@ -193,6 +193,14 @@ def detect_balance_spec(df: pd.DataFrame) -> BalanceSpec:
 # ==========================
 # Construcción de líneas
 # ==========================
+
+# >>> NUEVO FILTRO - excluye solo "INGRESOS" en mayúscula exacta
+def _skip_title_ingresos(cuenta: str) -> bool:
+    if cuenta is None:
+        return False
+    return str(cuenta).strip() == "INGRESOS"
+
+
 def _find_debe_haber_pair(df: pd.DataFrame, base_header: str) -> Optional[Tuple[str, str]]:
     """
     Busca columnas emparejadas Debe/Haber alrededor de 'base_header':
@@ -229,6 +237,7 @@ def _find_debe_haber_pair(df: pd.DataFrame, base_header: str) -> Optional[Tuple[
         return (debe, haber)
     return None
 
+
 def build_opening_lines(df: pd.DataFrame, spec: BalanceSpec):
     if not spec.opening_cols:
         return []
@@ -237,6 +246,11 @@ def build_opening_lines(df: pd.DataFrame, spec: BalanceSpec):
         cuenta = str(row.get(spec.account_col, "")).strip()
         if not cuenta:
             continue
+
+        # >>> APLICAMOS EL FILTRO AQUÍ
+        if _skip_title_ingresos(cuenta):
+            continue
+
         total = 0.0
         for c in spec.opening_cols:
             total += normalize_value(row.get(c, 0))
@@ -247,11 +261,12 @@ def build_opening_lines(df: pd.DataFrame, spec: BalanceSpec):
         lines.append((cuenta, debe, haber))
     return lines
 
+
 def build_month_lines(df: pd.DataFrame, spec: BalanceSpec, month_col: str):
     """
     Soporta:
       A) una sola columna por mes (valor +/- => Debe/Haber)
-      B) par <Mes> Debe / <Mes> Haber (con -, /, _, o pegados, o invertidos)
+      B) par <Mes> Debe / <Mes> Haber
     """
     pair = _find_debe_haber_pair(df, month_col)
     lines: List[Tuple[str, float, float]] = []
@@ -262,6 +277,11 @@ def build_month_lines(df: pd.DataFrame, spec: BalanceSpec, month_col: str):
             cuenta = str(row.get(spec.account_col, "")).strip()
             if not cuenta:
                 continue
+
+            # >>> FILTRO INGRESOS
+            if _skip_title_ingresos(cuenta):
+                continue
+
             d = normalize_value(row.get(cde, 0))
             h = normalize_value(row.get(cha, 0))
             if abs(d) < 1e-12 and abs(h) < 1e-12:
@@ -274,6 +294,11 @@ def build_month_lines(df: pd.DataFrame, spec: BalanceSpec, month_col: str):
         cuenta = str(row.get(spec.account_col, "")).strip()
         if not cuenta:
             continue
+
+        # >>> FILTRO INGRESOS
+        if _skip_title_ingresos(cuenta):
+            continue
+
         val = normalize_value(row.get(month_col, 0))
         if abs(val) < 1e-12:
             continue
@@ -282,10 +307,12 @@ def build_month_lines(df: pd.DataFrame, spec: BalanceSpec, month_col: str):
         lines.append((cuenta, debe, haber))
     return lines
 
+
 def month_title(m: int, year: int) -> str:
     long_names = {1:"Enero",2:"Febrero",3:"Marzo",4:"Abril",5:"Mayo",6:"Junio",7:"Julio",8:"Agosto",9:"Septiembre",10:"Octubre",11:"Noviembre",12:"Diciembre"}
     label = long_names.get(m, f"Mes {m}")
     return f"As. Movimientos {label} {year}"
+
 
 # ==========================
 # Entrada principal
@@ -294,7 +321,7 @@ def build_diario_from_balance(input_path: str, balance_sheet: str|None, year: in
     xls = pd.ExcelFile(input_path)
     bsheet = balance_sheet if (balance_sheet and balance_sheet in xls.sheet_names) else xls.sheet_names[0]
 
-    # Cargar tabla normalizada (con encabezados reales)
+    # Cargar tabla normalizada
     df_balance = _load_balance_table(input_path, bsheet, header_row)
 
     spec = detect_balance_spec(df_balance)
@@ -329,3 +356,4 @@ def build_diario_from_balance(input_path: str, balance_sheet: str|None, year: in
         writer.blank_row()
 
     return writer, last_n
+
