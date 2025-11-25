@@ -47,7 +47,7 @@ def read_asaj_blocks(input_path: str, sheet_name: Optional[str]) -> List[Tuple[s
     inside = False  # estamos dentro de un bloque entre dos marcadores pintados
 
     # Encabezado en fila 1: A=Cuenta, B=Nombre, C=Debe, D=Haber
-    for r in range(2, ws.max_row + 1):
+    for r in range(1, ws.max_row + 1):
         # ¿Comienza un nuevo bloque?
         if marker_is_highlighted(ws, r):
             if inside and current:

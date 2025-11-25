@@ -386,7 +386,7 @@ def read_adjust_blocks_from_bytes(data: bytes, sheet_name: Optional[str]) -> Lis
     title: Optional[str] = None
     include_mode = False  # solo capturamos si el marcador fue 'include'
 
-    for r in range(2, ws.max_row + 1):
+    for r in range(1, ws.max_row + 1):
         kind = _marker_kind(ws, r)
 
         if kind in ('include', 'exclude'):
