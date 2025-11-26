@@ -39,12 +39,29 @@ def _strip_accents_lower(s: str) -> str:
     s = "".join(ch for ch in s if unicodedata.category(ch) != "Mn")
     return " ".join(s.lower().split())
 
+# Importante:
+# - NO incluimos "ingresos" acá para poder tratarlo aparte.
 BANNED_SECTION_LABELS = {
-    "activo", "pasivo", "patrimonio neto", "ingresos", "egresos", "total", "totales"
+    "activo", "pasivo", "patrimonio neto", "egresos", "total", "totales"
 }
 
 def is_banned_label(texto: str) -> bool:
-    return _strip_accents_lower(texto) in BANNED_SECTION_LABELS
+    """
+    Devuelve True si el texto es un título de sección que NO debe ir como cuenta.
+    Reglas:
+    - "INGRESOS" EXACTO (todo mayúsculas) se considera título y se excluye.
+    - "Ingresos", "ingresos", etc. SÍ se consideran cuentas y NO se excluyen.
+    - El resto de títulos (ACTIVO, PASIVO, PATRIMONIO NETO, EGRESOS, TOTAL, TOTALES)
+      se comparan de forma insensible a mayúsculas/minúsculas.
+    """
+    if texto is None:
+        return False
+    raw = str(texto).strip()
+    # Caso especial pedido: solo "INGRESOS" en mayúscula se excluye
+    if raw == "INGRESOS":
+        return True
+    # El resto se normaliza
+    return _strip_accents_lower(raw) in BANNED_SECTION_LABELS
 
 OPENING_COL_SYNS = {
     "saldo al inicio", "saldo inicial", "saldo inicio", "saldo de apertura", "saldo apertura"
@@ -325,20 +342,6 @@ def _is_numeric_like(val) -> bool:
     except Exception:
         return False
 
-def _is_blank_account_value(v) -> bool:
-    """
-    True si el valor de cuenta se considera 'vacío':
-    - None
-    - cadena vacía
-    - solo espacios / caracteres invisibles
-    """
-    if v is None:
-        return True
-    s = str(v)
-    s = s.replace("\u00A0", " ")
-    s = s.replace("\t", " ").replace("\r", " ").replace("\n", " ")
-    return s.strip() == ""
-
 def _marker_kind(ws, row_idx: int) -> str:
     """
     Devuelve:
@@ -383,7 +386,7 @@ def read_adjust_blocks_from_bytes(data: bytes, sheet_name: Optional[str]) -> Lis
     title: Optional[str] = None
     include_mode = False  # solo capturamos si el marcador fue 'include'
 
-    for r in range(2, ws.max_row + 1):
+    for r in range(1, ws.max_row + 1):
         kind = _marker_kind(ws, r)
 
         if kind in ('include', 'exclude'):
@@ -397,22 +400,19 @@ def read_adjust_blocks_from_bytes(data: bytes, sheet_name: Optional[str]) -> Lis
         if not include_mode:
             continue
 
-        cuenta = ws.cell(r, 1).value  # Columna A: nombre de cuenta
-        nombre = ws.cell(r, 2).value  # Columna B: título del asiento
+        cuenta = ws.cell(r, 1).value
+        nombre = ws.cell(r, 2).value
         debe   = ws.cell(r, 3).value
         haber  = ws.cell(r, 4).value
 
-        # 1) Fila totalmente vacía → no es movimiento
         if (cuenta is None and nombre is None and debe is None and haber is None):
             continue
 
-        # 2) Si la cuenta está vacía (columna A sin nada útil), NO se pasa
-        if _is_blank_account_value(cuenta):
-            continue
-
-        # 3) El título del asiento se toma de la primera fila válida que tenga "nombre" en B
         if title is None and nombre not in (None, ""):
             title = str(nombre).strip()
+
+        if (cuenta is None or str(cuenta).strip() == "") and (debe in (None, "")) and (haber in (None, "")):
+            continue
 
         current.append({
             "Cuenta": str(cuenta or "").strip(),
@@ -423,17 +423,7 @@ def read_adjust_blocks_from_bytes(data: bytes, sheet_name: Optional[str]) -> Lis
     if include_mode and current:
         blocks.append((title or "Asientos de Ajuste", current))
 
-    # Limpieza extra: eliminar cualquier línea sin cuenta en todos los bloques
-    cleaned_blocks: List[Tuple[str, List[dict]]] = []
-    for t, lines in blocks:
-        new_lines = []
-        for ln in lines:
-            cta = ln.get("Cuenta", "")
-            if _is_blank_account_value(cta):
-                continue
-            new_lines.append(ln)
-        cleaned_blocks.append((t, new_lines))
-    return cleaned_blocks
+    return blocks
 
 # ==========================
 # Fechas
@@ -473,23 +463,16 @@ def write_entry(ws, start_row: int, asiento_num: int, titulo: str, lines: List[d
     printed_first = False
 
     for ln in lines:
-        cuenta = ln.get("Cuenta", "")
+        cuenta = ln.get("Cuenta","")
         debe   = _safe_num(ln.get("Debe",0))
         haber  = _safe_num(ln.get("Haber",0))
-
-        # 🚫 Nunca escribimos filas sin nombre de cuenta
-        if _is_blank_account_value(cuenta):
-            continue
-
-        cuenta = str(cuenta).strip()
 
         ws.write(row, 0, fecha_str if not printed_first else "")
         ws.write(row, 2, cuenta)
         ws.write_number(row, 4, debe, money_fmt)
         ws.write_number(row, 5, haber, money_fmt)
 
-        total_debe += debe
-        total_haber += haber
+        total_debe += debe; total_haber += haber
         printed_first = True
         row += 1
 
@@ -591,8 +574,7 @@ def build_output_excel(empresa: str,
             row = write_blue_separator(ws, row, wb)
             fecha_aj = _fmt_dmy(period_end_date)
             for title, lines in adjust_blocks:
-                if not lines: 
-                    continue
+                if not lines: continue
                 row = write_entry(ws, row, asiento, title or "Asientos de Ajuste", lines, wb, fecha_aj)
                 asiento += 1
                 _accumulate_major(mayor_agg, lines)
@@ -646,8 +628,11 @@ def _build_cierre_from_df(df: pd.DataFrame, account_col: str, reexp_col: str) ->
     df2 = df2.dropna(subset=[account_col], how="all")
     df2[account_col] = df2[account_col].astype(str).str.strip()
 
-    idx_ingresos = df2[df2[account_col].str.upper().str.fullmatch("INGRESOS")].index
-    idx_totales  = df2[df2[account_col].str.upper().str.startswith("TOTA")].index
+    # Usar SOLO "INGRESOS" exacto en mayúsculas como corte de sección
+    raw_cta = df2[account_col].astype(str).str.strip()
+    idx_ingresos = raw_cta[raw_cta == "INGRESOS"].index
+    idx_totales  = raw_cta[raw_cta.str.upper().str.startswith("TOTA")].index
+
     start_ingresos = idx_ingresos[0] if len(idx_ingresos)>0 else None
     start_totales  = idx_totales[0]  if len(idx_totales)>0 else len(df2)
 
@@ -829,3 +814,4 @@ if uploaded:
         st.error(f"Error procesando el archivo: {e}")
 else:
     st.info("Subí un Excel para comenzar.")
+
