@@ -543,18 +543,38 @@ def write_blue_separator(ws, start_row: int, workbook, cols=6):
     return r + 1
 
 def _accumulate_major(agg: Dict[str, Dict[str, float]], lines: List[dict]):
+    """
+    Acumula al MAYOR unificando cuentas que solo difieren en mayúsculas/minúsculas.
+    Ej:
+      "MANTENIMIENTO" y "Mantenimiento" -> misma cuenta en el mayor.
+    """
     for ln in lines:
-        cta = str(ln.get("Cuenta","")).strip()
-        if not cta:
+        cta_raw = str(ln.get("Cuenta", "")).strip()
+        if not cta_raw:
             continue
-        d = _safe_num(ln.get("Debe",0.0))
-        h = _safe_num(ln.get("Haber",0.0))
-        if cta not in agg:
-            agg[cta] = {"Debe": 0.0, "Haber": 0.0}
-        agg[cta]["Debe"]  += d
-        agg[cta]["Haber"] += h
+
+        # Clave normalizada para agrupar (case-insensitive)
+        key = cta_raw.casefold()
+
+        d = _safe_num(ln.get("Debe", 0.0))
+        h = _safe_num(ln.get("Haber", 0.0))
+
+        if key not in agg:
+            # Guardamos cómo se escribió la cuenta la primera vez
+            agg[key] = {
+                "Cuenta": cta_raw,
+                "Debe": 0.0,
+                "Haber": 0.0,
+            }
+
+        agg[key]["Debe"]  += d
+        agg[key]["Haber"] += h
 
 def _write_mayor(ws, start_row: int, workbook, mayor_agg: Dict[str, Dict[str, float]]):
+    """
+    Escribe el MAYOR usando la 'Cuenta' guardada en cada entrada,
+    pero la clave interna es case-insensitive (ver _accumulate_major).
+    """
     bold = workbook.add_format({"bold": True})
     money = workbook.add_format({"num_format": '#,##0.00'})
 
@@ -564,10 +584,12 @@ def _write_mayor(ws, start_row: int, workbook, mayor_agg: Dict[str, Dict[str, fl
     ws.write(row, 2, "Haber", bold)
     row += 1
 
-    for cta in sorted(mayor_agg.keys()):
-        ws.write(row, 0, cta)
-        ws.write_number(row, 1, _safe_num(mayor_agg[cta]["Debe"]), money)
-        ws.write_number(row, 2, _safe_num(mayor_agg[cta]["Haber"]), money)
+    # Ordenamos por el nombre mostrado de la cuenta (case-insensitive)
+    for key in sorted(mayor_agg.keys(), key=lambda k: mayor_agg[k]["Cuenta"].casefold()):
+        info = mayor_agg[key]
+        ws.write(row, 0, info["Cuenta"])
+        ws.write_number(row, 1, _safe_num(info["Debe"]), money)
+        ws.write_number(row, 2, _safe_num(info["Haber"]), money)
         row += 1
 
     return row
