@@ -643,17 +643,23 @@ def build_output_excel(empresa: str,
         asiento = 1
         mayor_agg: Dict[str, Dict[str, float]] = {}
 
-        # Apertura
+        # ===== Apertura =====
         t_open, lines_open, f_open = opening_tuple
-        row = write_entry(ws, row, asiento, t_open, lines_open, wb, f_open); asiento += 1
-        _accumulate_major(mayor_agg, lines_open)
+        if lines_open:  # SOLO si hay movimientos de apertura
+            row = write_entry(ws, row, asiento, t_open, lines_open, wb, f_open)
+            asiento += 1
+            _accumulate_major(mayor_agg, lines_open)
 
-        # Mensuales
+        # ===== Mensuales =====
         for t, lines, f in month_tuples:
-            row = write_entry(ws, row, asiento, t, lines, wb, f); asiento += 1
+            if not lines:
+                # Mes sin movimientos → no se genera asiento ni se incrementa el número
+                continue
+            row = write_entry(ws, row, asiento, t, lines, wb, f)
+            asiento += 1
             _accumulate_major(mayor_agg, lines)
 
-        # Ajustes
+        # ===== Ajustes =====
         if any(lines for _, lines in adjust_blocks):
             row = write_blue_separator(ws, row, wb)
             fecha_aj = _fmt_dmy(period_end_date)
@@ -664,7 +670,7 @@ def build_output_excel(empresa: str,
                 asiento += 1
                 _accumulate_major(mayor_agg, lines)
 
-        # Cierres (misma fecha que ajustes)
+        # ===== Cierres (misma fecha que ajustes) =====
         fecha_cierre = _fmt_dmy(period_end_date)
         if cierre_resultado:
             titulo_res = f"Cierre de Cuentas de Resultado {period_end_date.year}"
@@ -677,7 +683,7 @@ def build_output_excel(empresa: str,
             asiento += 1
             _accumulate_major(mayor_agg, cierre_patrimonial)
 
-        # Mayor (3 filas en blanco antes)
+        # ===== Mayor (3 filas en blanco antes) =====
         row += 3
         _write_mayor(ws, row, wb, mayor_agg)
 
@@ -899,4 +905,3 @@ if uploaded:
         st.error(f"Error procesando el archivo: {e}")
 else:
     st.info("Subí un Excel para comenzar.")
-
