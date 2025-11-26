@@ -342,19 +342,54 @@ def _is_numeric_like(val) -> bool:
     except Exception:
         return False
 
+# Patrón para marcadores tipo "4 BIS", "4BIS", "4 bis bis", etc.
+ASIENTO_MARKER_RE = re.compile(
+    r"^\s*\d+\s*(?:[Bb][Ii][Ss](?:\s*[Bb][Ii][Ss])*)?\s*$"
+)
+
+def _is_asiento_marker_value(val) -> bool:
+    """
+    Devuelve True si el valor puede ser usado como 'número de asiento':
+    - Número puro: 1, 2, 3...
+    - Número seguido de BIS en cualquiera de sus variantes:
+      "4 BIS", "4BIS", "4 bis", "4 bis bis", etc.
+    """
+    if val is None:
+        return False
+    s = str(val).strip()
+    if not s:
+        return False
+
+    # Caso clásico: número puro
+    if _is_numeric_like(s):
+        return True
+
+    # Caso "4 BIS", "4BIS", "4 bis bis", etc.
+    # Quitamos separadores decimales por las dudas
+    s_simple = s.replace(".", "").replace(",", "")
+    if ASIENTO_MARKER_RE.match(s_simple):
+        return True
+
+    return False
+
 def _marker_kind(ws, row_idx: int) -> str:
     """
     Devuelve:
       - 'include' si el número de asiento (A o B) está pintado amarillo/naranja
       - 'exclude' si hay número de asiento sin color o con otro color (rojo, etc.)
       - 'none'    si no hay número de asiento en la fila
+
+    Ahora el "número de asiento" puede ser:
+      - un número puro (1, 2, 3, ...)
+      - un número con BIS: "4 BIS", "4BIS", "4 bis bis", etc.
     """
     for col in (1, 2):  # A o B
         cell = ws.cell(row_idx, col)
         tl = _get_top_left_cell(ws, cell)
         val = cell.value if cell.value is not None else tl.value
 
-        if not _is_numeric_like(val):
+        # Usamos el nuevo helper en lugar de _is_numeric_like directamente
+        if not _is_asiento_marker_value(val):
             continue
 
         hx1 = _normalize_hex_from_cell(tl)
