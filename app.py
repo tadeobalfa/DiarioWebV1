@@ -608,17 +608,36 @@ def build_output_excel(empresa: str,
         engine_kwargs={"options": {"nan_inf_to_errors": True}}
     ) as writer:
         wb = writer.book
-        ws = wb.add_worksheet("DIARIO")
 
+        # Nombre de la hoja: DIARIO - AÑO
+        sheet_title = f"DIARIO - {period_end_date.year}"
+        ws = wb.add_worksheet(sheet_title)
+
+        # Anchos de columnas
         ws.set_column(0, 0, 16)  # A (Fecha en asientos / Cuenta en Mayor)
         ws.set_column(1, 1, 28)  # B Título
         ws.set_column(2, 2, 36)  # C Cuenta
         ws.set_column(3, 3, 6)   # D vacío
         ws.set_column(4, 5, 14)  # E-F Debe/Haber
 
+        # ===== Formatos encabezado =====
+        fmt_empresa = wb.add_format({
+            "font_name": "Calibri",
+            "font_size": 12,
+            "bold": True
+        })
+        fmt_titulo = wb.add_format({
+            "font_name": "Calibri",
+            "font_size": 10,
+            "bold": False
+        })
+
         row = 0
-        ws.write(row, 0, empresa or "EMPRESA"); row += 1
-        ws.write(row, 0, f"ASIENTOS DIARIOS - {period_end_date.year}"); row += 1
+        # Fila 1: nombre de empresa
+        ws.write(row, 0, empresa or "EMPRESA", fmt_empresa); row += 1
+        # Fila 2: título del diario
+        ws.write(row, 0, f"ASIENTOS DIARIOS - {period_end_date.year}", fmt_titulo); row += 1
+        # Fila 3 en blanco
         row += 1
 
         asiento = 1
@@ -639,7 +658,8 @@ def build_output_excel(empresa: str,
             row = write_blue_separator(ws, row, wb)
             fecha_aj = _fmt_dmy(period_end_date)
             for title, lines in adjust_blocks:
-                if not lines: continue
+                if not lines:
+                    continue
                 row = write_entry(ws, row, asiento, title or "Asientos de Ajuste", lines, wb, fecha_aj)
                 asiento += 1
                 _accumulate_major(mayor_agg, lines)
@@ -879,3 +899,4 @@ if uploaded:
         st.error(f"Error procesando el archivo: {e}")
 else:
     st.info("Subí un Excel para comenzar.")
+
