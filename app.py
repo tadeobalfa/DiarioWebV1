@@ -411,8 +411,11 @@ def read_adjust_blocks_from_bytes(data: bytes, sheet_name: Optional[str]) -> Lis
         if title is None and nombre not in (None, ""):
             title = str(nombre).strip()
 
-        if (cuenta is None or str(cuenta).strip() == "") and (debe in (None, "")) and (haber in (None, "")):
+        # <<< CAMBIO: si NO hay nombre de cuenta en columna A, NO se pasa la fila,
+        # aunque tenga Debe/Haber (estos son tus totales manuales).
+        if cuenta is None or str(cuenta).strip() == "":
             continue
+        # >>> FIN CAMBIO
 
         current.append({
             "Cuenta": str(cuenta or "").strip(),
@@ -466,6 +469,11 @@ def write_entry(ws, start_row: int, asiento_num: int, titulo: str, lines: List[d
         cuenta = ln.get("Cuenta","")
         debe   = _safe_num(ln.get("Debe",0))
         haber  = _safe_num(ln.get("Haber",0))
+
+        # <<< CAMBIO: no escribir filas sin nombre de cuenta (doble seguridad)
+        if cuenta is None or str(cuenta).strip() == "":
+            continue
+        # >>> FIN CAMBIO
 
         ws.write(row, 0, fecha_str if not printed_first else "")
         ws.write(row, 2, cuenta)
@@ -814,4 +822,3 @@ if uploaded:
         st.error(f"Error procesando el archivo: {e}")
 else:
     st.info("Subí un Excel para comenzar.")
-
