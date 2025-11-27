@@ -452,16 +452,22 @@ def read_adjust_blocks_from_bytes(data: bytes, sheet_name: Optional[str]) -> Lis
         if title is None and nombre not in (None, ""):
             title = str(nombre).strip()
 
-        # <<< CAMBIO: si NO hay nombre de cuenta en columna A, NO se pasa la fila,
-        # aunque tenga Debe/Haber (estos son tus totales manuales).
+        # 1) Si NO hay nombre de cuenta en columna A, NO se pasa la fila
         if cuenta is None or str(cuenta).strip() == "":
             continue
-        # >>> FIN CAMBIO
+
+        # 2) Normalizamos los importes
+        debe_val  = _safe_num(debe)
+        haber_val = _safe_num(haber)
+
+        # 3) Si NO tiene ni saldo deudor NI acreedor (ambos 0) → excluir
+        if abs(debe_val) < 1e-9 and abs(haber_val) < 1e-9:
+            continue
 
         current.append({
             "Cuenta": str(cuenta or "").strip(),
-            "Debe": _safe_num(debe),
-            "Haber": _safe_num(haber)
+            "Debe": debe_val,
+            "Haber": haber_val
         })
 
     if include_mode and current:
