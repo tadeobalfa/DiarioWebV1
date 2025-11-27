@@ -496,6 +496,13 @@ def write_entry(ws, start_row: int, asiento_num: int, titulo: str, lines: List[d
     header_fmt = workbook.add_format({"bold": True, "bottom": 1})
     money_fmt  = workbook.add_format({"num_format": '#,##0.00'})
     total_fmt  = workbook.add_format({"bold": True, "top": 1, "num_format": '#,##0.00'})
+    # NUEVO: formato de error en rojo
+    error_total_fmt = workbook.add_format({
+        "bold": True,
+        "top": 1,
+        "num_format": '#,##0.00',
+        "font_color": "red"
+    })
     bold_fmt   = workbook.add_format({"bold": True})
 
     row = start_row
@@ -513,21 +520,21 @@ def write_entry(ws, start_row: int, asiento_num: int, titulo: str, lines: List[d
     printed_first = False
 
     for ln in lines:
-        cuenta = ln.get("Cuenta","")
-        debe   = _safe_num(ln.get("Debe",0))
-        haber  = _safe_num(ln.get("Haber",0))
+        cuenta = ln.get("Cuenta", "")
+        debe   = _safe_num(ln.get("Debe", 0))
+        haber  = _safe_num(ln.get("Haber", 0))
 
-        # <<< CAMBIO: no escribir filas sin nombre de cuenta (doble seguridad)
+        # No escribir filas sin nombre de cuenta (doble seguridad)
         if cuenta is None or str(cuenta).strip() == "":
             continue
-        # >>> FIN CAMBIO
 
         ws.write(row, 0, fecha_str if not printed_first else "")
         ws.write(row, 2, cuenta)
         ws.write_number(row, 4, debe, money_fmt)
         ws.write_number(row, 5, haber, money_fmt)
 
-        total_debe += debe; total_haber += haber
+        total_debe += debe
+        total_haber += haber
         printed_first = True
         row += 1
 
@@ -540,9 +547,13 @@ def write_entry(ws, start_row: int, asiento_num: int, titulo: str, lines: List[d
     ws.write(row, 2, titulo, bold_fmt)
     row += 1
 
-    # Totales solo números
-    ws.write_number(row, 4, total_debe, total_fmt)
-    ws.write_number(row, 5, total_haber, total_fmt)
+    # === Totales ===
+    # Si la diferencia Debe-Haber es mayor a 0,10 → totales en rojo
+    diff = abs(total_debe - total_haber)
+    fmt_totales = error_total_fmt if diff > 0.10 else total_fmt
+
+    ws.write_number(row, 4, total_debe, fmt_totales)
+    ws.write_number(row, 5, total_haber, fmt_totales)
     row += 3  # dos filas en blanco
 
     return row
