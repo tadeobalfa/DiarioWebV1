@@ -258,7 +258,13 @@ def _to_float(x) -> float:
 
 def _safe_num(x) -> float:
     v = _to_float(x)
-    return v if math.isfinite(v) else 0.0
+    # Si no es finito, lo tratamos como 0
+    if not math.isfinite(v):
+        return 0.0
+    # 🔴 NUEVO: cualquier importe con valor absoluto menor a 0,01 se considera 0
+    if abs(v) < 0.01:
+        return 0.0
+    return v
 
 # ==========================
 # Construcción de líneas (base estable)
