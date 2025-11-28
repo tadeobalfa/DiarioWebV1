@@ -492,26 +492,20 @@ def last_day(y: int, m: int) -> date:
 # Exportar a Excel (incluye MAYOR)
 # ==========================
 
-def write_entry(
-    ws,
-    start_row: int,
-    asiento_num: int,
-    titulo: str,
-    lines: List[dict],
-    workbook,
-    fecha_str: str,
-    extra_value: Optional[float] = None  # NUEVO: para escribir en columna G
-):
+def write_entry(ws, start_row: int, asiento_num: int, titulo: str,
+                lines: List[dict], workbook, fecha_str: str,
+                resultado_teorico: Optional[float] = None):
     header_fmt = workbook.add_format({"bold": True, "bottom": 1})
     money_fmt  = workbook.add_format({"num_format": '#,##0.00'})
     total_fmt  = workbook.add_format({"bold": True, "top": 1, "num_format": '#,##0.00'})
-    total_err_fmt = workbook.add_format({
-        "bold": True,
-        "top": 1,
+    bold_fmt   = workbook.add_format({"bold": True})
+
+    # Para marcar diferencias > 0,10 entre total Debe y Haber
+    diff_alert_fmt = workbook.add_format({
         "num_format": '#,##0.00',
         "font_color": "red",
+        "bold": True
     })
-    bold_fmt   = workbook.add_format({"bold": True})
 
     row = start_row
     # Encabezado por asiento: A=Fecha, B=Título, C=Nro asiento, D vacío, E=Debe, F=Haber
@@ -532,7 +526,7 @@ def write_entry(
         debe   = _safe_num(ln.get("Debe", 0))
         haber  = _safe_num(ln.get("Haber", 0))
 
-        # Seguridad: ignorar filas sin nombre de cuenta
+        # No escribir filas sin nombre de cuenta
         if cuenta is None or str(cuenta).strip() == "":
             continue
 
@@ -540,6 +534,11 @@ def write_entry(
         ws.write(row, 2, cuenta)
         ws.write_number(row, 4, debe, money_fmt)
         ws.write_number(row, 5, haber, money_fmt)
+
+        # Si este asiento es el Cierre de Resultado y estamos en la fila
+        # "Resultado del Ejercicio", escribimos el resultado teórico en la col. G.
+        if (resultado_teorico is not None) and (str(cuenta).strip() == "Resultado del Ejercicio"):
+            ws.write_number(row, 6, _safe_num(resultado_teorico), money_fmt)
 
         total_debe += debe
         total_haber += haber
@@ -555,18 +554,13 @@ def write_entry(
     ws.write(row, 2, titulo, bold_fmt)
     row += 1
 
-    # Diferencia para marcar error (> 0.10) en ROJO
+    # Totales con chequeo de diferencia > 0,10
     diff = abs(total_debe - total_haber)
-    fmt_totales = total_err_fmt if diff > 0.10 else total_fmt
+    debe_fmt_tot = total_fmt if diff <= 0.10 else diff_alert_fmt
+    haber_fmt_tot = total_fmt if diff <= 0.10 else diff_alert_fmt
 
-    # Totales Debe/Haber
-    ws.write_number(row, 4, total_debe, fmt_totales)
-    ws.write_number(row, 5, total_haber, fmt_totales)
-
-    # NUEVO: valor extra en columna G (idx 6), si viene
-    if extra_value is not None:
-        ws.write_number(row, 6, _safe_num(extra_value), money_fmt)
-
+    ws.write_number(row, 4, total_debe, debe_fmt_tot)
+    ws.write_number(row, 5, total_haber, haber_fmt_tot)
     row += 3  # dos filas en blanco
 
     return row
@@ -712,8 +706,8 @@ def build_output_excel(empresa: str,
         fecha_cierre = _fmt_dmy(period_end_date)
         if cierre_resultado:
             titulo_res = f"Cierre de Cuentas de Resultado {period_end_date.year}"
-            # SOLO aquí pasamos resultado_teorico → se escribe en columna G
-            row = write_entry(ws, row, asiento, titulo_res, cierre_resultado, wb, fecha_cierre, resultado_teorico)
+            row = write_entry(ws, row, asiento, titulo_res, cierre_resultado, wb, fecha_cierre,
+                              resultado_teorico=resultado_teorico)
             asiento += 1
             _accumulate_major(mayor_agg, cierre_resultado)
         if cierre_patrimonial:
@@ -753,33 +747,21 @@ def _pick_reexpresado_column(df: pd.DataFrame, user_choice: str) -> Optional[str
     return None
 
 def _build_cierre_from_df(df: pd.DataFrame, account_col: str, reexp_col: str) -> Tuple[List[dict], List[dict], Optional[float]]:
-    """
-    Devuelve:
-        res_lines, pat_lines, resultado_teorico
-
-    resultado_teorico = EGRESOS - INGRESOS (monto tomado de la misma columna
-    reexpresada), de forma tal que:
-      - si INGRESOS > EGRESOS → resultado_teorico < 0
-      - si EGRESOS > INGRESOS → resultado_teorico > 0
-    """
     df2 = df[[account_col, reexp_col]].copy()
     df2.columns = [account_col, "SALDO_U"]
     df2 = df2.dropna(subset=[account_col], how="all")
     df2[account_col] = df2[account_col].astype(str).str.strip()
 
+    # Usar SOLO "INGRESOS" exacto en mayúsculas como corte de sección
     raw_cta = df2[account_col].astype(str).str.strip()
-    raw_upper = raw_cta.str.upper()
-
     idx_ingresos = raw_cta[raw_cta == "INGRESOS"].index
-    idx_egresos  = raw_upper[raw_upper == "EGRESOS"].index
-    idx_totales  = raw_cta[raw_upper.str.startswith("TOTA")].index
+    idx_totales  = raw_cta[raw_cta.str.upper().str.startswith("TOTA")].index
 
     start_ingresos = idx_ingresos[0] if len(idx_ingresos) > 0 else None
     start_totales  = idx_totales[0]  if len(idx_totales) > 0 else len(df2)
 
-    # Particiones para cierre patrimonial / resultado
-    df_patr = df2.loc[:start_ingresos-1] if start_ingresos is not None else df2.copy()
-    df_resu = df2.loc[start_ingresos+1:start_totales-1] if start_ingresos is not None else pd.DataFrame(columns=df2.columns)
+    df_patr = df2.loc[:start_ingresos - 1] if start_ingresos is not None else df2.copy()
+    df_resu = df2.loc[start_ingresos + 1:start_totales - 1] if start_ingresos is not None else pd.DataFrame(columns=df2.columns)
 
     banned = {s.upper() for s in BANNED_SECTION_LABELS}
 
@@ -810,22 +792,19 @@ def _build_cierre_from_df(df: pd.DataFrame, account_col: str, reexp_col: str) ->
             pat_lines.append({"Cuenta": cta, "Debe": -v, "Haber": 0.0})
 
     # ==========================
-    # Resultado teórico INGRESOS vs EGRESOS
+    # Resultado teórico (columna G):
+    # suma del saldo de la fila INGRESOS + la fila EGRESOS
+    # usando la MISMA columna reexpresada (SALDO_U).
+    # INGRESOS viene negativo y EGRESOS positivo → la suma ya deja el signo correcto.
     # ==========================
+    idx_ing = raw_cta[raw_cta == "INGRESOS"].index
+    idx_egr = raw_cta[raw_cta == "EGRESOS"].index
     resultado_teorico: Optional[float] = None
-    ingreso_val = None
-    egreso_val  = None
-
-    if len(idx_ingresos) > 0:
-        ingreso_val = _safe_num(df2.loc[idx_ingresos[0], "SALDO_U"])
-    if len(idx_egresos) > 0:
-        egreso_val = _safe_num(df2.loc[idx_egresos[0], "SALDO_U"])
-
-    if ingreso_val is not None and egreso_val is not None:
-        # EGRESOS - INGRESOS  → signo pedido:
-        #   Ingresos > Egresos → negativo
-        #   Egresos > Ingresos → positivo
-        resultado_teorico = egreso_val - ingreso_val
+    if len(idx_ing) > 0 and len(idx_egr) > 0:
+        saldo_ing = _safe_num(df2.loc[idx_ing[0], "SALDO_U"])
+        saldo_egr = _safe_num(df2.loc[idx_egr[0], "SALDO_U"])
+        # IMPORTANTE: se SUMAN (no se restan)
+        resultado_teorico = saldo_ing + saldo_egr
 
     return res_lines, pat_lines, resultado_teorico
 
