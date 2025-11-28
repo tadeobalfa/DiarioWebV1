@@ -956,26 +956,26 @@ if uploaded:
 
         period_end_date = last_day(period_end[0], period_end[1])
 
-        # Excel
-        st.subheader("3) Generar Diario (Apertura + 12 meses + Ajustes + Cierres + Mayor)")
-        if st.button("Generar Diario"):
-            xlsx_bytes = build_output_excel(
-                empresa=empresa,
-                opening_tuple=opening_tuple,
-                month_tuples=month_tuples,
-                adjust_blocks=adjust_blocks,
-                cierre_resultado=cierre_resultado_lines,
-                cierre_patrimonial=cierre_patrimonial_lines,
-                period_end_date=period_end_date
-		        resultado_teorico=resultado_teorico_balance
-            )
-            st.success("✅ Diario generado.")
-            st.download_button(
-                "⬇️ Descargar Diario (XLSX)",
-                xlsx_bytes,
-                "DiarioGenerado.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
+    # Excel
+    st.subheader("3) Generar Diario (Apertura + 12 meses + Ajustes + Cierres + Mayor)")
+    if st.button("Generar Diario"):
+        xlsx_bytes = build_output_excel(
+            empresa=empresa,
+            opening_tuple=opening_tuple,
+            month_tuples=month_tuples,
+            adjust_blocks=adjust_blocks,
+            cierre_resultado=cierre_resultado_lines,
+            cierre_patrimonial=cierre_patrimonial_lines,
+            period_end_date=period_end_date,
+            resultado_teorico=resultado_teorico_balance
+        )
+        st.success("✅ Diario generado.")
+        st.download_button(
+            "⬇️ Descargar Diario (XLSX)",
+            xlsx_bytes,
+            "DiarioGenerado.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
 
     except Exception as e:
         st.error(f"Error procesando el archivo: {e}")
