@@ -967,7 +967,7 @@ if uploaded:
                 cierre_resultado=cierre_resultado_lines,
                 cierre_patrimonial=cierre_patrimonial_lines,
                 period_end_date=period_end_date
-		resultado_teorico=resultado_teorico_balance
+		        resultado_teorico=resultado_teorico_balance
             )
             st.success("✅ Diario generado.")
             st.download_button(
