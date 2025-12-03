@@ -1,12 +1,22 @@
 # app.py
 # ------------------------------------------------------------
-# Versión Estable Diario V1 + Cierres + Mayor + Filtro de Ajustes por color
-# - Mantiene TODO lo aprobado (no se cambia nada salvo lo pedido)
-# - Ajustes: solo se incluyen bloques cuyo número está pintado AMARILLO/NARANJA.
-#   Si está sin color o ROJO, no se incluye ni se arrastran líneas.
-# - Cierres (Resultado y Patrimonial) con “Resultado del Ejercicio”
-# - Mayor al final (Cuenta / Total Debe / Total Haber) tras 3 filas en blanco
-# - En UI: selección explícita de la columna de saldos reexpresados (por letra o nombre)
+# Versión Estable Diario V6
+# - Apertura + 12 meses + Ajustes + Cierres + Mayor
+# - Ajustes: solo bloques cuyo número está pintado AMARILLO/NARANJA.
+# - Soporta números de asiento con BIS ("4 BIS", "4BIS", "4 BIS BIS", etc.).
+# - Cierres (Resultado y Patrimonial) con “Resultado del Ejercicio”.
+# - Mayor: unifica cuentas case-insensitive ("MANTENIMIENTO" == "Mantenimiento").
+# - Encabezados: Calibri 12 (empresa) y Calibri 10 (título).
+# - Nombre de hoja: "DIARIO - AÑO".
+# - Meses sin movimientos se omiten (no generan asiento).
+# - Importes |x| < 0,01 se consideran 0 (no se pasan).
+# - En ajustes: filas sin cuenta o con Debe=Haber=0 se excluyen.
+# - Totales en rojo si la diferencia entre Debe y Haber > 0,10.
+# - Resultado teórico (INGRESOS + EGRESOS) se escribe en col. G
+#   en la fila “Resultado del Ejercicio” del asiento de cierre de resultado.
+# - Nuevo: selector de formato
+#     * Configuración 1 (Balances sin Sistema): título de asiento abajo (col. C, negrita).
+#     * Configuración 2 (Balances con Sistema): título por línea en col. D, sin fila extra.
 # ------------------------------------------------------------
 
 import io
@@ -25,7 +35,7 @@ import streamlit as st
 # ==========================
 st.set_page_config(page_title="Generador de Diario", layout="wide")
 st.title("📘 Generador de Asientos Diarios")
-st.caption("Versión Estable Diario V1 — Apertura + 12 meses + Ajustes + Cierres + Mayor")
+st.caption("Versión Estable Diario V6 — Apertura + 12 meses + Ajustes + Cierres + Mayor")
 
 # ==========================
 # Utilidades generales
@@ -57,19 +67,19 @@ def is_banned_label(texto: str) -> bool:
     if texto is None:
         return False
     raw = str(texto).strip()
-    # Caso especial pedido: solo "INGRESOS" en mayúscula se excluye
     if raw == "INGRESOS":
         return True
-    # El resto se normaliza
     return _strip_accents_lower(raw) in BANNED_SECTION_LABELS
 
 OPENING_COL_SYNS = {
-    "saldo al inicio", "saldo inicial", "saldo inicio", "saldo de apertura", "saldo apertura"
+    "saldo al inicio", "saldo inicial", "saldo inicio",
+    "saldo de apertura", "saldo apertura"
 }
 
 MONTHS_ES = {
-    1:"Enero",2:"Febrero",3:"Marzo",4:"Abril",5:"Mayo",6:"Junio",
-    7:"Julio",8:"Agosto",9:"Septiembre",10:"Octubre",11:"Noviembre",12:"Diciembre"
+    1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril",
+    5: "Mayo", 6: "Junio", 7: "Julio", 8: "Agosto",
+    9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre"
 }
 
 MONTH_HEADER_PAT = re.compile(
@@ -129,7 +139,7 @@ def find_header_row(df_raw: pd.DataFrame, max_scan_rows: int = 60) -> int:
 
 def _first_non_empty_in_first_col(df_raw: pd.DataFrame) -> Optional[str]:
     try:
-        col0 = df_raw.iloc[:,0]
+        col0 = df_raw.iloc[:, 0]
         for v in col0:
             if pd.notna(v) and str(v).strip():
                 return str(v).strip()
@@ -173,14 +183,16 @@ def load_balance_from_bytes(data: bytes, sheet_name: str):
     opening_col = None
     for c in all_cols:
         if _strip_accents_lower(c) in OPENING_COL_SYNS:
-            opening_col = c; break
+            opening_col = c
+            break
     if opening_col is None:
         for c in all_cols:
             s = _strip_accents_lower(c)
             if "saldo" in s and any(t in s for t in ("inicio","inicial","apertura")):
-                opening_col = c; break
+                opening_col = c
+                break
 
-    month_tuples: List[Tuple[int,int,str]] = []
+    month_tuples: List[Tuple[int, int, str]] = []
     fallback_year = _infer_year_from_headers(all_cols)
     for c in all_cols:
         mnum = _month_number_from_header(c)
@@ -191,7 +203,7 @@ def load_balance_from_bytes(data: bytes, sheet_name: str):
 
     month_tuples.sort(key=lambda t: (t[0], t[1]))
     seen = set()
-    ordered_months: List[Tuple[int,int,str]] = []
+    ordered_months: List[Tuple[int, int, str]] = []
     for y, m, col in month_tuples:
         key = (y, m)
         if key not in seen:
@@ -217,7 +229,8 @@ def load_balance_from_bytes(data: bytes, sheet_name: str):
 # ==========================
 
 def _to_float(x) -> float:
-    if x is None: return 0.0
+    if x is None:
+        return 0.0
     if isinstance(x, (int, float)):
         try:
             fx = float(x)
@@ -226,7 +239,8 @@ def _to_float(x) -> float:
             return 0.0
 
     s = str(x).strip()
-    if not s: return 0.0
+    if not s:
+        return 0.0
     s = s.replace("\u00A0", " ").replace(" ", "")
     for sym in "$€£ARSAR$":
         s = s.replace(sym, "")
@@ -243,12 +257,15 @@ def _to_float(x) -> float:
                 return float(s)
         elif has_comma and not has_dot:
             if s.count(",") == 1:
-                s = s.replace(",", "."); return float(s)
+                s = s.replace(",", ".")
+                return float(s)
             else:
-                s = s.replace(",", "");  return float(s)
+                s = s.replace(",", "")
+                return float(s)
         elif has_dot and not has_comma:
             if s.count(".") > 1:
-                s = s.replace(".", "");  return float(s)
+                s = s.replace(".", "")
+                return float(s)
             else:
                 return float(s)
         else:
@@ -257,27 +274,32 @@ def _to_float(x) -> float:
         return 0.0
 
 def _safe_num(x) -> float:
+    """
+    Convierte a float, trata NaN/inf como 0 y fuerza a 0 los valores
+    con módulo < 0,01 (para no pasar centavos residuales tipo 0,0001).
+    """
     v = _to_float(x)
-    # Si no es finito, lo tratamos como 0
     if not math.isfinite(v):
         return 0.0
-    # 🔴 NUEVO: cualquier importe con valor absoluto menor a 0,01 se considera 0
     if abs(v) < 0.01:
         return 0.0
     return v
 
 # ==========================
-# Construcción de líneas (base estable)
+# Construcción de líneas (apertura / meses)
 # ==========================
 
 def build_opening_lines(df: pd.DataFrame, opening_col: Optional[str], account_col: str) -> List[dict]:
-    if not opening_col or opening_col not in df.columns: return []
+    if not opening_col or opening_col not in df.columns:
+        return []
     lines = []
     for _, row in df.iterrows():
         cuenta = str(row.get(account_col, "")).strip()
-        if not cuenta or is_banned_label(cuenta): continue
+        if not cuenta or is_banned_label(cuenta):
+            continue
         val = _safe_num(row.get(opening_col, 0))
-        if abs(val) < 1e-9: continue
+        if abs(val) < 1e-9:
+            continue
         if val >= 0:
             lines.append({"Cuenta": cuenta, "Debe": abs(val), "Haber": 0.0})
         else:
@@ -285,13 +307,16 @@ def build_opening_lines(df: pd.DataFrame, opening_col: Optional[str], account_co
     return lines
 
 def build_month_lines(df: pd.DataFrame, month_col: Optional[str], account_col: str) -> List[dict]:
-    if not month_col or month_col not in df.columns: return []
+    if not month_col or month_col not in df.columns:
+        return []
     lines = []
     for _, row in df.iterrows():
         cuenta = str(row.get(account_col, "")).strip()
-        if not cuenta or is_banned_label(cuenta): continue
+        if not cuenta or is_banned_label(cuenta):
+            continue
         val = _safe_num(row.get(month_col, 0))
-        if abs(val) < 1e-9: continue
+        if abs(val) < 1e-9:
+            continue
         if val >= 0:
             lines.append({"Cuenta": cuenta, "Debe": abs(val), "Haber": 0.0})
         else:
@@ -314,7 +339,7 @@ def _normalize_hex_from_cell(cell) -> Optional[str]:
             return None
         for attr in ("rgb", "value"):
             v = getattr(color_obj, attr, None)
-            if v is None: 
+            if v is None:
                 continue
             v = getattr(v, "rgb", v)
             v = getattr(v, "value", v)
@@ -342,7 +367,8 @@ def _get_top_left_cell(ws, cell):
 
 def _is_numeric_like(val) -> bool:
     try:
-        if val is None: return False
+        if val is None:
+            return False
         float(str(val).strip().replace(".", "").replace(",", "."))
         return True
     except Exception:
@@ -366,12 +392,9 @@ def _is_asiento_marker_value(val) -> bool:
     if not s:
         return False
 
-    # Caso clásico: número puro
     if _is_numeric_like(s):
         return True
 
-    # Caso "4 BIS", "4BIS", "4 bis bis", etc.
-    # Quitamos separadores decimales por las dudas
     s_simple = s.replace(".", "").replace(",", "")
     if ASIENTO_MARKER_RE.match(s_simple):
         return True
@@ -382,19 +405,14 @@ def _marker_kind(ws, row_idx: int) -> str:
     """
     Devuelve:
       - 'include' si el número de asiento (A o B) está pintado amarillo/naranja
-      - 'exclude' si hay número de asiento sin color o con otro color (rojo, etc.)
+      - 'exclude' si hay número de asiento sin color o con otro color
       - 'none'    si no hay número de asiento en la fila
-
-    Ahora el "número de asiento" puede ser:
-      - un número puro (1, 2, 3, ...)
-      - un número con BIS: "4 BIS", "4BIS", "4 bis bis", etc.
     """
     for col in (1, 2):  # A o B
         cell = ws.cell(row_idx, col)
         tl = _get_top_left_cell(ws, cell)
         val = cell.value if cell.value is not None else tl.value
 
-        # Usamos el nuevo helper en lugar de _is_numeric_like directamente
         if not _is_asiento_marker_value(val):
             continue
 
@@ -418,7 +436,8 @@ def read_adjust_blocks_from_bytes(data: bytes, sheet_name: Optional[str]) -> Lis
     else:
         for c in ["As Aj", "AS AJ", "AS AJ.", "AS AJUSTE", "AS AJUSTES"]:
             if c in wb.sheetnames:
-                ws = wb[c]; break
+                ws = wb[c]
+                break
         if ws is None:
             return []
 
@@ -443,31 +462,30 @@ def read_adjust_blocks_from_bytes(data: bytes, sheet_name: Optional[str]) -> Lis
 
         cuenta = ws.cell(r, 1).value
         nombre = ws.cell(r, 2).value
-        debe   = ws.cell(r, 3).value
-        haber  = ws.cell(r, 4).value
+        debe_raw   = ws.cell(r, 3).value
+        haber_raw  = ws.cell(r, 4).value
 
-        if (cuenta is None and nombre is None and debe is None and haber is None):
+        if (cuenta is None and nombre is None and debe_raw is None and haber_raw is None):
             continue
 
         if title is None and nombre not in (None, ""):
             title = str(nombre).strip()
 
-        # 1) Si NO hay nombre de cuenta en columna A, NO se pasa la fila
+        # Solo pasan filas con nombre de cuenta
         if cuenta is None or str(cuenta).strip() == "":
             continue
 
-        # 2) Normalizamos los importes
-        debe_val  = _safe_num(debe)
-        haber_val = _safe_num(haber)
+        debe = _safe_num(debe_raw)
+        haber = _safe_num(haber_raw)
 
-        # 3) Si NO tiene ni saldo deudor NI acreedor (ambos 0) → excluir
-        if abs(debe_val) < 1e-9 and abs(haber_val) < 1e-9:
+        # SOLO en ajustes: si Debe y Haber son ambos 0 => no se pasa la fila
+        if abs(debe) < 1e-9 and abs(haber) < 1e-9:
             continue
 
         current.append({
             "Cuenta": str(cuenta or "").strip(),
-            "Debe": debe_val,
-            "Haber": haber_val
+            "Debe": debe,
+            "Haber": haber
         })
 
     if include_mode and current:
@@ -492,20 +510,21 @@ def last_day(y: int, m: int) -> date:
 # Exportar a Excel (incluye MAYOR)
 # ==========================
 
-def write_entry(ws, start_row: int, asiento_num: int, titulo: str,
-                lines: List[dict], workbook, fecha_str: str,
-                resultado_teorico: Optional[float] = None):
+def write_entry(
+    ws,
+    start_row: int,
+    asiento_num: int,
+    titulo: str,
+    lines: List[dict],
+    workbook,
+    fecha_str: str,
+    resultado_teorico=None,
+    usar_formato_sistema: bool = False,
+):
     header_fmt = workbook.add_format({"bold": True, "bottom": 1})
     money_fmt  = workbook.add_format({"num_format": '#,##0.00'})
     total_fmt  = workbook.add_format({"bold": True, "top": 1, "num_format": '#,##0.00'})
     bold_fmt   = workbook.add_format({"bold": True})
-
-    # Para marcar diferencias > 0,10 entre total Debe y Haber
-    diff_alert_fmt = workbook.add_format({
-        "num_format": '#,##0.00',
-        "font_color": "red",
-        "bold": True
-    })
 
     row = start_row
     # Encabezado por asiento: A=Fecha, B=Título, C=Nro asiento, D vacío, E=Debe, F=Haber
@@ -521,24 +540,33 @@ def write_entry(ws, start_row: int, asiento_num: int, titulo: str,
     total_haber = 0.0
     printed_first = False
 
+    is_cierre_resultado = titulo.lower().startswith("cierre de cuentas de resultado")
+
     for ln in lines:
         cuenta = ln.get("Cuenta", "")
         debe   = _safe_num(ln.get("Debe", 0))
         haber  = _safe_num(ln.get("Haber", 0))
 
-        # No escribir filas sin nombre de cuenta
         if cuenta is None or str(cuenta).strip() == "":
             continue
 
         ws.write(row, 0, fecha_str if not printed_first else "")
         ws.write(row, 2, cuenta)
+
+        # Configuración 2: escribimos el título en la columna D
+        if usar_formato_sistema:
+            ws.write(row, 3, titulo)
+
         ws.write_number(row, 4, debe, money_fmt)
         ws.write_number(row, 5, haber, money_fmt)
 
-        # Si este asiento es el Cierre de Resultado y estamos en la fila
-        # "Resultado del Ejercicio", escribimos el resultado teórico en la col. G.
-        if (resultado_teorico is not None) and (str(cuenta).strip() == "Resultado del Ejercicio"):
-            ws.write_number(row, 6, _safe_num(resultado_teorico), money_fmt)
+        # Resultado teórico en col. G para la fila "Resultado del Ejercicio"
+        if (
+            is_cierre_resultado
+            and resultado_teorico is not None
+            and str(cuenta).strip().lower() == "resultado del ejercicio"
+        ):
+            ws.write_number(row, 6, resultado_teorico, money_fmt)
 
         total_debe += debe
         total_haber += haber
@@ -549,19 +577,25 @@ def write_entry(ws, start_row: int, asiento_num: int, titulo: str,
         ws.write(row, 0, fecha_str)
         row += 1
 
-    # Fila en blanco + fila con el título en C (negrita) antes de totales
+    # Config 1: fila con el título en C (negrita) antes de totales.
+    # Config 2: NO se escribe esa fila, solo se deja la fila en blanco.
     row += 1
-    ws.write(row, 2, titulo, bold_fmt)
-    row += 1
+    if not usar_formato_sistema:
+        ws.write(row, 2, titulo, bold_fmt)
+        row += 1
 
-    # Totales con chequeo de diferencia > 0,10
     diff = abs(total_debe - total_haber)
-    debe_fmt_tot = total_fmt if diff <= 0.10 else diff_alert_fmt
-    haber_fmt_tot = total_fmt if diff <= 0.10 else diff_alert_fmt
+    if diff > 0.10:
+        total_fmt_error = workbook.add_format(
+            {"bold": True, "top": 1, "num_format": '#,##0.00', "font_color": "red"}
+        )
+        ws.write_number(row, 4, total_debe, total_fmt_error)
+        ws.write_number(row, 5, total_haber, total_fmt_error)
+    else:
+        ws.write_number(row, 4, total_debe, total_fmt)
+        ws.write_number(row, 5, total_haber, total_fmt)
 
-    ws.write_number(row, 4, total_debe, debe_fmt_tot)
-    ws.write_number(row, 5, total_haber, haber_fmt_tot)
-    row += 3  # dos filas en blanco
+    row += 3  # dos filas en blanco entre asientos
 
     return row
 
@@ -583,28 +617,18 @@ def _accumulate_major(agg: Dict[str, Dict[str, float]], lines: List[dict]):
         if not cta_raw:
             continue
 
-        # Clave normalizada para agrupar (case-insensitive)
         key = cta_raw.casefold()
 
         d = _safe_num(ln.get("Debe", 0.0))
         h = _safe_num(ln.get("Haber", 0.0))
 
         if key not in agg:
-            # Guardamos cómo se escribió la cuenta la primera vez
-            agg[key] = {
-                "Cuenta": cta_raw,
-                "Debe": 0.0,
-                "Haber": 0.0,
-            }
+            agg[key] = {"Cuenta": cta_raw, "Debe": 0.0, "Haber": 0.0}
 
         agg[key]["Debe"]  += d
         agg[key]["Haber"] += h
 
 def _write_mayor(ws, start_row: int, workbook, mayor_agg: Dict[str, Dict[str, float]]):
-    """
-    Escribe el MAYOR usando la 'Cuenta' guardada en cada entrada,
-    pero la clave interna es case-insensitive (ver _accumulate_major).
-    """
     bold = workbook.add_format({"bold": True})
     money = workbook.add_format({"num_format": '#,##0.00'})
 
@@ -614,7 +638,6 @@ def _write_mayor(ws, start_row: int, workbook, mayor_agg: Dict[str, Dict[str, fl
     ws.write(row, 2, "Haber", bold)
     row += 1
 
-    # Ordenamos por el nombre mostrado de la cuenta (case-insensitive)
     for key in sorted(mayor_agg.keys(), key=lambda k: mayor_agg[k]["Cuenta"].casefold()):
         info = mayor_agg[key]
         ws.write(row, 0, info["Cuenta"])
@@ -624,14 +647,17 @@ def _write_mayor(ws, start_row: int, workbook, mayor_agg: Dict[str, Dict[str, fl
 
     return row
 
-def build_output_excel(empresa: str,
-                       opening_tuple: Tuple[str, List[dict], str],
-                       month_tuples: List[Tuple[str, List[dict], str]],
-                       adjust_blocks: List[Tuple[str, List[dict]]],
-                       cierre_resultado: Optional[List[dict]],
-                       cierre_patrimonial: Optional[List[dict]],
-                       period_end_date: date,
-                       resultado_teorico: Optional[float] = None) -> bytes:
+def build_output_excel(
+    empresa: str,
+    opening_tuple: Tuple[str, List[dict], str],
+    month_tuples: List[Tuple[str, List[dict], str]],
+    adjust_blocks: List[Tuple[str, List[dict]]],
+    cierre_resultado: Optional[List[dict]],
+    cierre_patrimonial: Optional[List[dict]],
+    period_end_date: date,
+    resultado_teorico: Optional[float] = None,
+    usar_formato_sistema: bool = False,
+) -> bytes:
     output = io.BytesIO()
     with pd.ExcelWriter(
         output,
@@ -645,14 +671,14 @@ def build_output_excel(empresa: str,
         ws = wb.add_worksheet(sheet_title)
 
         # Anchos de columnas
-        ws.set_column(0, 0, 16)  # A (Fecha en asientos / Cuenta en Mayor)
+        ws.set_column(0, 0, 16)  # A (Fecha / Cuenta en Mayor)
         ws.set_column(1, 1, 28)  # B Título
         ws.set_column(2, 2, 36)  # C Cuenta
-        ws.set_column(3, 3, 6)   # D vacío
+        ws.set_column(3, 3, 24)  # D Nombre de Asiento (config 2)
         ws.set_column(4, 5, 14)  # E-F Debe/Haber
-        ws.set_column(6, 6, 14)  # G Comparación INGRESOS-EGRESOS
+        ws.set_column(6, 6, 18)  # G Resultado teórico (cuando aplique)
 
-        # ===== Formatos encabezado =====
+        # Formatos encabezado
         fmt_empresa = wb.add_format({
             "font_name": "Calibri",
             "font_size": 12,
@@ -665,58 +691,74 @@ def build_output_excel(empresa: str,
         })
 
         row = 0
-        # Fila 1: nombre de empresa
         ws.write(row, 0, empresa or "EMPRESA", fmt_empresa); row += 1
-        # Fila 2: título del diario
         ws.write(row, 0, f"ASIENTOS DIARIOS - {period_end_date.year}", fmt_titulo); row += 1
-        # Fila 3 en blanco
-        row += 1
+        row += 1  # fila en blanco
 
         asiento = 1
         mayor_agg: Dict[str, Dict[str, float]] = {}
 
-        # ===== Apertura =====
+        # Apertura
         t_open, lines_open, f_open = opening_tuple
-        if lines_open:  # SOLO si hay movimientos de apertura
-            row = write_entry(ws, row, asiento, t_open, lines_open, wb, f_open)
+        if lines_open:
+            row = write_entry(
+                ws, row, asiento, t_open, lines_open, wb, f_open,
+                resultado_teorico=resultado_teorico,
+                usar_formato_sistema=usar_formato_sistema,
+            )
             asiento += 1
             _accumulate_major(mayor_agg, lines_open)
 
-        # ===== Mensuales =====
+        # Mensuales
         for t, lines, f in month_tuples:
             if not lines:
-                # Mes sin movimientos → no se genera asiento ni se incrementa el número
                 continue
-            row = write_entry(ws, row, asiento, t, lines, wb, f)
+            row = write_entry(
+                ws, row, asiento, t, lines, wb, f,
+                resultado_teorico=resultado_teorico,
+                usar_formato_sistema=usar_formato_sistema,
+            )
             asiento += 1
             _accumulate_major(mayor_agg, lines)
 
-        # ===== Ajustes =====
+        # Ajustes
         if any(lines for _, lines in adjust_blocks):
             row = write_blue_separator(ws, row, wb)
             fecha_aj = _fmt_dmy(period_end_date)
             for title, lines in adjust_blocks:
                 if not lines:
                     continue
-                row = write_entry(ws, row, asiento, title or "Asientos de Ajuste", lines, wb, fecha_aj)
+                row = write_entry(
+                    ws, row, asiento, title or "Asientos de Ajuste", lines, wb, fecha_aj,
+                    resultado_teorico=resultado_teorico,
+                    usar_formato_sistema=usar_formato_sistema,
+                )
                 asiento += 1
                 _accumulate_major(mayor_agg, lines)
 
-        # ===== Cierres (misma fecha que ajustes) =====
+        # Cierres
         fecha_cierre = _fmt_dmy(period_end_date)
         if cierre_resultado:
             titulo_res = f"Cierre de Cuentas de Resultado {period_end_date.year}"
-            row = write_entry(ws, row, asiento, titulo_res, cierre_resultado, wb, fecha_cierre,
-                              resultado_teorico=resultado_teorico)
+            row = write_entry(
+                ws, row, asiento, titulo_res, cierre_resultado, wb, fecha_cierre,
+                resultado_teorico=resultado_teorico,
+                usar_formato_sistema=usar_formato_sistema,
+            )
             asiento += 1
             _accumulate_major(mayor_agg, cierre_resultado)
+
         if cierre_patrimonial:
             titulo_pat = f"Cierre de Cuentas Patrimoniales {period_end_date.year}"
-            row = write_entry(ws, row, asiento, titulo_pat, cierre_patrimonial, wb, fecha_cierre)
+            row = write_entry(
+                ws, row, asiento, titulo_pat, cierre_patrimonial, wb, fecha_cierre,
+                resultado_teorico=resultado_teorico,
+                usar_formato_sistema=usar_formato_sistema,
+            )
             asiento += 1
             _accumulate_major(mayor_agg, cierre_patrimonial)
 
-        # ===== Mayor (3 filas en blanco antes) =====
+        # Mayor
         row += 3
         _write_mayor(ws, row, wb, mayor_agg)
 
@@ -724,7 +766,7 @@ def build_output_excel(empresa: str,
     return output.getvalue()
 
 # ==========================
-# CIERRE: armado a partir de columna reexpresada
+# CIERRE: armado desde columna reexpresada
 # ==========================
 
 def _col_letter_to_index(letter: str) -> Optional[int]:
@@ -746,13 +788,16 @@ def _pick_reexpresado_column(df: pd.DataFrame, user_choice: str) -> Optional[str
         return df.columns[col_idx]
     return None
 
-def _build_cierre_from_df(df: pd.DataFrame, account_col: str, reexp_col: str) -> Tuple[List[dict], List[dict], Optional[float]]:
+def _build_cierre_from_df(
+    df: pd.DataFrame,
+    account_col: str,
+    reexp_col: str
+) -> Tuple[List[dict], List[dict], Optional[float]]:
     df2 = df[[account_col, reexp_col]].copy()
     df2.columns = [account_col, "SALDO_U"]
     df2 = df2.dropna(subset=[account_col], how="all")
     df2[account_col] = df2[account_col].astype(str).str.strip()
 
-    # Usar SOLO "INGRESOS" exacto en mayúsculas como corte de sección
     raw_cta = df2[account_col].astype(str).str.strip()
     idx_ingresos = raw_cta[raw_cta == "INGRESOS"].index
     idx_totales  = raw_cta[raw_cta.str.upper().str.startswith("TOTA")].index
@@ -760,8 +805,8 @@ def _build_cierre_from_df(df: pd.DataFrame, account_col: str, reexp_col: str) ->
     start_ingresos = idx_ingresos[0] if len(idx_ingresos) > 0 else None
     start_totales  = idx_totales[0]  if len(idx_totales) > 0 else len(df2)
 
-    df_patr = df2.loc[:start_ingresos - 1] if start_ingresos is not None else df2.copy()
-    df_resu = df2.loc[start_ingresos + 1:start_totales - 1] if start_ingresos is not None else pd.DataFrame(columns=df2.columns)
+    df_patr = df2.loc[:start_ingresos-1] if start_ingresos is not None else df2.copy()
+    df_resu = df2.loc[start_ingresos+1:start_totales-1] if start_ingresos is not None else pd.DataFrame(columns=df2.columns)
 
     banned = {s.upper() for s in BANNED_SECTION_LABELS}
 
@@ -791,24 +836,25 @@ def _build_cierre_from_df(df: pd.DataFrame, account_col: str, reexp_col: str) ->
         else:
             pat_lines.append({"Cuenta": cta, "Debe": -v, "Haber": 0.0})
 
-    # ==========================
-    # Resultado teórico (columna G):
-    # suma del saldo de la fila INGRESOS + la fila EGRESOS
-    # usando la MISMA columna reexpresada (SALDO_U).
-    # INGRESOS viene negativo y EGRESOS positivo → la suma ya deja el signo correcto.
-    # ==========================
-    idx_ing = raw_cta[raw_cta == "INGRESOS"].index
-    idx_egr = raw_cta[raw_cta == "EGRESOS"].index
-    resultado_teorico: Optional[float] = None
-    if len(idx_ing) > 0 and len(idx_egr) > 0:
-        saldo_ing = _safe_num(df2.loc[idx_ing[0], "SALDO_U"])
-        saldo_egr = _safe_num(df2.loc[idx_egr[0], "SALDO_U"])
-        # IMPORTANTE: se SUMAN (no se restan)
-        resultado_teorico = saldo_ing + saldo_egr
+    # Resultado teórico = INGRESOS + EGRESOS (valores de las filas totales)
+    resultado_teorico = None
+    try:
+        fila_ingresos = df2.loc[raw_cta == "INGRESOS"].iloc[0]
+        fila_egresos  = df2.loc[raw_cta == "EGRESOS"].iloc[0]
+        val_ing = _safe_num(fila_ingresos["SALDO_U"])
+        val_egr = _safe_num(fila_egresos["SALDO_U"])
+        # Como INGRESOS suele venir negativo y EGRESOS positivo:
+        # Resultado = INGRESOS + EGRESOS
+        resultado_teorico = val_ing + val_egr
+    except Exception:
+        resultado_teorico = None
 
     return res_lines, pat_lines, resultado_teorico
 
-def _add_resultado_del_ejercicio(res_lines: List[dict], pat_lines: List[dict]) -> Tuple[List[dict], List[dict]]:
+def _add_resultado_del_ejercicio(
+    res_lines: List[dict],
+    pat_lines: List[dict]
+) -> Tuple[List[dict], List[dict]]:
     def sum_dh(lines):
         d = sum(_safe_num(x["Debe"]) for x in lines)
         h = sum(_safe_num(x["Haber"]) for x in lines)
@@ -842,8 +888,16 @@ if uploaded:
     with col2:
         hoja_ajustes = st.selectbox("Hoja de AJUSTES (opcional)", ["Ninguna"] + sheet_names, index=0)
 
+    # Configuración de salida
+    st.subheader("2) Elegir configuración de salida")
+    config_salida = st.radio(
+        "Elegí la configuración del formato del Diario:",
+        ("Configuración 1 (Balances sin Sistema)", "Configuración 2 (Balances con Sistema)"),
+        index=0,
+    )
+
     # Selector columna reexpresada
-    st.subheader("2) Indicar columna de SALDOS REEXPRESADOS")
+    st.subheader("3) Indicar columna de SALDOS REEXPRESADOS")
     detected_cols = []
     try:
         df_tmp_raw = pd.read_excel(io.BytesIO(excel_bytes), sheet_name=hoja_balance, header=None)
@@ -879,13 +933,13 @@ if uploaded:
         (df_bal, header_row, opening_col, ordered_months,
          account_col, empresa_raw, period_start, period_end) = load_balance_from_bytes(excel_bytes, hoja_balance)
 
-        empresa = empresa_raw or uploaded.name.rsplit(".",1)[0]
+        empresa = empresa_raw or uploaded.name.rsplit(".", 1)[0]
 
         with st.expander("🔎 Diagnóstico"):
             st.write(f"**Fila de encabezado detectada:** {header_row}")
             st.write(f"**Columna de APERTURA:** {opening_col}")
             st.write(f"**Columna de CUENTA/CONCEPTO:** {account_col}")
-            st.write("**Meses detectados (ordenados):**", [(y, m, c) for (y,m,c) in ordered_months])
+            st.write("**Meses detectados (ordenados):**", [(y, m, c) for (y, m, c) in ordered_months])
             st.write(f"**Periodo:** {period_start[1]:02d}/{period_start[0]} → {period_end[1]:02d}/{period_end[0]}")
 
         # Líneas y fechas
@@ -906,7 +960,8 @@ if uploaded:
             month_tuples.append((label, lines, fecha))
             m += 1
             if m == 13:
-                y += 1; m = 1
+                y += 1
+                m = 1
 
         # Ajustes
         adjust_blocks: List[Tuple[str, List[dict]]] = []
@@ -936,8 +991,11 @@ if uploaded:
         period_end_date = last_day(period_end[0], period_end[1])
 
         # Excel
-        st.subheader("3) Generar Diario (Apertura + 12 meses + Ajustes + Cierres + Mayor)")
+        st.subheader("4) Generar Diario (Apertura + 12 meses + Ajustes + Cierres + Mayor)")
         if st.button("Generar Diario"):
+            usar_formato_sistema = (
+                config_salida == "Configuración 2 (Balances con Sistema)"
+            )
             xlsx_bytes = build_output_excel(
                 empresa=empresa,
                 opening_tuple=opening_tuple,
@@ -946,9 +1004,9 @@ if uploaded:
                 cierre_resultado=cierre_resultado_lines,
                 cierre_patrimonial=cierre_patrimonial_lines,
                 period_end_date=period_end_date,
-                resultado_teorico=resultado_teorico_balance
+                resultado_teorico=resultado_teorico_balance,
+                usar_formato_sistema=usar_formato_sistema,
             )
-
             st.success("✅ Diario generado.")
             st.download_button(
                 "⬇️ Descargar Diario (XLSX)",
