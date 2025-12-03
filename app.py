@@ -630,6 +630,7 @@ def write_entry(
         ws.write(row, 2, titulo, bold_fmt)
         row += 1
 
+    # Totales del asiento
     diff = abs(total_debe - total_haber)
     if diff > 0.10:
         total_fmt_error = workbook.add_format(
@@ -639,6 +640,7 @@ def write_entry(
         ws.write_number(row, 5, total_haber, total_fmt_error)
     else:
         ws.write_number(row, 4, total_debe, total_fmt)
+        ws.write_number(row, 5, total_haber, total_fmt)
 
     row += 3  # dos filas en blanco entre asientos
 
