@@ -1,6 +1,6 @@
 # app.py
 # ------------------------------------------------------------
-# Versión Estable Diario V6
+# Versión Estable Diario V6 + Configuración 2 con CÓDIGOS
 # - Apertura + 12 meses + Ajustes + Cierres + Mayor
 # - Ajustes: solo bloques cuyo número está pintado AMARILLO/NARANJA.
 # - Soporta números de asiento con BIS ("4 BIS", "4BIS", "4 BIS BIS", etc.).
@@ -14,9 +14,10 @@
 # - Totales en rojo si la diferencia entre Debe y Haber > 0,10.
 # - Resultado teórico (INGRESOS + EGRESOS) se escribe en col. G
 #   en la fila “Resultado del Ejercicio” del asiento de cierre de resultado.
-# - Nuevo: selector de formato
-#     * Configuración 1 (Balances sin Sistema): título de asiento abajo (col. C, negrita).
-#     * Configuración 2 (Balances con Sistema): título por línea en col. D, sin fila extra.
+# - Selector de formato:
+#     * Configuración 1 (Balances sin Sistema): título debajo del asiento (col. C).
+#     * Configuración 2 (Balances con Sistema): título en col. D en cada línea,
+#       y ahora CÓDIGO de cuenta en col. B (Mayor sin cambios).
 # ------------------------------------------------------------
 
 import io
@@ -164,7 +165,8 @@ def _infer_year_from_headers(headers: List[str]) -> Optional[int]:
 def load_balance_from_bytes(data: bytes, sheet_name: str):
     """
     Devuelve:
-      df, header_row, opening_col, ordered_months [(y,m,col)], account_col,
+      df, header_row, opening_col, ordered_months [(y,m,col)],
+      account_col (DESCRIPCION), code_col (opcional),
       empresa_raw, period_start (y,m), period_end (y,m)
     """
     buff = io.BytesIO(data)
@@ -178,7 +180,25 @@ def load_balance_from_bytes(data: bytes, sheet_name: str):
     all_cols = list(df.columns)
     months_like = [c for c in all_cols if _looks_like_month(c)]
     non_month = [c for c in all_cols if c not in months_like]
+
+    # Detectar columna de descripción y código:
+    # - descripción: contiene "descrip", "concepto", "detalle"
+    # - código: contiene "cuenta", "codigo", "cód."
     account_col = non_month[0] if non_month else all_cols[0]
+    code_col = None
+
+    for c in non_month:
+        s = _strip_accents_lower(c)
+        if any(k in s for k in ("descrip", "concepto", "detalle")):
+            account_col = c
+        if any(k in s for k in ("cuenta", "codigo", "cod " , "cod.")):
+            # solo tomamos como código si no se marcó como descripción
+            if code_col is None:
+                code_col = c
+
+    # Si no encontramos descripción explícita pero hay CUENTA/DESCRIPCIÓN
+    # estilo sistema (CUENTA / DESCRIPCION), account_col ya será DESCRIPCION
+    # y code_col será CUENTA (como en tu screenshot).
 
     opening_col = None
     for c in all_cols:
@@ -222,7 +242,7 @@ def load_balance_from_bytes(data: bytes, sheet_name: str):
 
     empresa_raw = _first_non_empty_in_first_col(df_raw)
 
-    return df, header_row, opening_col, ordered_months, account_col, empresa_raw, period_start, period_end
+    return df, header_row, opening_col, ordered_months, account_col, code_col, empresa_raw, period_start, period_end
 
 # ==========================
 # Parsing numérico robusto
@@ -289,38 +309,58 @@ def _safe_num(x) -> float:
 # Construcción de líneas (apertura / meses)
 # ==========================
 
-def build_opening_lines(df: pd.DataFrame, opening_col: Optional[str], account_col: str) -> List[dict]:
+def build_opening_lines(
+    df: pd.DataFrame,
+    opening_col: Optional[str],
+    account_col: str,
+    code_col: Optional[str] = None
+) -> List[dict]:
     if not opening_col or opening_col not in df.columns:
         return []
     lines = []
     for _, row in df.iterrows():
-        cuenta = str(row.get(account_col, "")).strip()
-        if not cuenta or is_banned_label(cuenta):
+        desc = str(row.get(account_col, "")).strip()
+        if not desc or is_banned_label(desc):
             continue
+        code = ""
+        if code_col and code_col in df.columns:
+            code = str(row.get(code_col, "")).strip()
+
         val = _safe_num(row.get(opening_col, 0))
         if abs(val) < 1e-9:
             continue
+
         if val >= 0:
-            lines.append({"Cuenta": cuenta, "Debe": abs(val), "Haber": 0.0})
+            lines.append({"Cuenta": desc, "Codigo": code, "Debe": abs(val), "Haber": 0.0})
         else:
-            lines.append({"Cuenta": cuenta, "Debe": 0.0, "Haber": abs(val)})
+            lines.append({"Cuenta": desc, "Codigo": code, "Debe": 0.0, "Haber": abs(val)})
     return lines
 
-def build_month_lines(df: pd.DataFrame, month_col: Optional[str], account_col: str) -> List[dict]:
+def build_month_lines(
+    df: pd.DataFrame,
+    month_col: Optional[str],
+    account_col: str,
+    code_col: Optional[str] = None
+) -> List[dict]:
     if not month_col or month_col not in df.columns:
         return []
     lines = []
     for _, row in df.iterrows():
-        cuenta = str(row.get(account_col, "")).strip()
-        if not cuenta or is_banned_label(cuenta):
+        desc = str(row.get(account_col, "")).strip()
+        if not desc or is_banned_label(desc):
             continue
+        code = ""
+        if code_col and code_col in df.columns:
+            code = str(row.get(code_col, "")).strip()
+
         val = _safe_num(row.get(month_col, 0))
         if abs(val) < 1e-9:
             continue
+
         if val >= 0:
-            lines.append({"Cuenta": cuenta, "Debe": abs(val), "Haber": 0.0})
+            lines.append({"Cuenta": desc, "Codigo": code, "Debe": abs(val), "Haber": 0.0})
         else:
-            lines.append({"Cuenta": cuenta, "Debe": 0.0, "Haber": abs(val)})
+            lines.append({"Cuenta": desc, "Codigo": code, "Debe": 0.0, "Haber": abs(val)})
     return lines
 
 # ==========================
@@ -550,10 +590,16 @@ def write_entry(
         if cuenta is None or str(cuenta).strip() == "":
             continue
 
+        codigo = ln.get("Codigo", "")
+
         ws.write(row, 0, fecha_str if not printed_first else "")
+
+        # Configuración 2: código en col. B (si viene) y título en D
+        if usar_formato_sistema and codigo:
+            ws.write(row, 1, codigo)
+
         ws.write(row, 2, cuenta)
 
-        # Configuración 2: escribimos el título en la columna D
         if usar_formato_sistema:
             ws.write(row, 3, titulo)
 
@@ -593,7 +639,6 @@ def write_entry(
         ws.write_number(row, 5, total_haber, total_fmt_error)
     else:
         ws.write_number(row, 4, total_debe, total_fmt)
-        ws.write_number(row, 5, total_haber, total_fmt)
 
     row += 3  # dos filas en blanco entre asientos
 
@@ -672,7 +717,7 @@ def build_output_excel(
 
         # Anchos de columnas
         ws.set_column(0, 0, 16)  # A (Fecha / Cuenta en Mayor)
-        ws.set_column(1, 1, 28)  # B Título
+        ws.set_column(1, 1, 20)  # B Código
         ws.set_column(2, 2, 36)  # C Cuenta
         ws.set_column(3, 3, 24)  # D Nombre de Asiento (config 2)
         ws.set_column(4, 5, 14)  # E-F Debe/Haber
@@ -930,20 +975,28 @@ if uploaded:
 
     try:
         # Balance base
-        (df_bal, header_row, opening_col, ordered_months,
-         account_col, empresa_raw, period_start, period_end) = load_balance_from_bytes(excel_bytes, hoja_balance)
+        (df_bal,
+         header_row,
+         opening_col,
+         ordered_months,
+         account_col,
+         code_col,
+         empresa_raw,
+         period_start,
+         period_end) = load_balance_from_bytes(excel_bytes, hoja_balance)
 
         empresa = empresa_raw or uploaded.name.rsplit(".", 1)[0]
 
         with st.expander("🔎 Diagnóstico"):
             st.write(f"**Fila de encabezado detectada:** {header_row}")
             st.write(f"**Columna de APERTURA:** {opening_col}")
-            st.write(f"**Columna de CUENTA/CONCEPTO:** {account_col}")
+            st.write(f"**Columna de DESCRIPCIÓN / CUENTA:** {account_col}")
+            st.write(f"**Columna de CÓDIGO (si existe):** {code_col}")
             st.write("**Meses detectados (ordenados):**", [(y, m, c) for (y, m, c) in ordered_months])
             st.write(f"**Periodo:** {period_start[1]:02d}/{period_start[0]} → {period_end[1]:02d}/{period_end[0]}")
 
         # Líneas y fechas
-        opening_lines = build_opening_lines(df_bal, opening_col, account_col)
+        opening_lines = build_opening_lines(df_bal, opening_col, account_col, code_col)
         open_date = first_day(period_start[0], period_start[1])
         opening_title = f"Asiento de Apertura {open_date.year}"
         opening_tuple = (opening_title, opening_lines, _fmt_dmy(open_date))
@@ -955,7 +1008,7 @@ if uploaded:
             yy, mm = y, m
             col = cols_map.get((yy, mm))
             label = f"As. Movimiento {MONTHS_ES[mm]} {yy}"
-            lines = build_month_lines(df_bal, col, account_col) if col else []
+            lines = build_month_lines(df_bal, col, account_col, code_col) if col else []
             fecha = _fmt_dmy(last_day(yy, mm))
             month_tuples.append((label, lines, fecha))
             m += 1
@@ -983,7 +1036,9 @@ if uploaded:
         resultado_teorico_balance: Optional[float] = None
 
         if real_col and account_col in df_bal.columns and real_col in df_bal.columns:
-            res_lines, pat_lines, resultado_teorico_balance = _build_cierre_from_df(df_bal, account_col, real_col)
+            res_lines, pat_lines, resultado_teorico_balance = _build_cierre_from_df(
+                df_bal, account_col, real_col
+            )
             res_lines, pat_lines = _add_resultado_del_ejercicio(res_lines, pat_lines)
             cierre_resultado_lines = res_lines
             cierre_patrimonial_lines = pat_lines
