@@ -1018,10 +1018,47 @@ if uploaded:
                 y += 1
                 m = 1
 
+        # ==========================
+        # Mapa de códigos por cuenta (para Configuración 2)
+        # Se arma a partir de Apertura + meses
+        # ==========================
+        def _update_codigo_map(lines: List[dict], mapping: Dict[str, str]):
+            for ln in lines:
+                if not isinstance(ln, dict):
+                    continue
+                cuenta = str(ln.get("Cuenta", "")).strip()
+                codigo = str(ln.get("Codigo", "")).strip()
+                if not cuenta or not codigo:
+                    continue
+                key = _strip_accents_lower(cuenta)
+                if key not in mapping:
+                    mapping[key] = codigo
+
+        codigo_por_cuenta: Dict[str, str] = {}
+        _update_codigo_map(opening_lines, codigo_por_cuenta)
+        for _, lines, _ in month_tuples:
+            _update_codigo_map(lines, codigo_por_cuenta)
+
         # Ajustes
         adjust_blocks: List[Tuple[str, List[dict]]] = []
         if hoja_ajustes != "Ninguna":
             adjust_blocks = read_adjust_blocks_from_bytes(excel_bytes, sheet_name=hoja_ajustes)
+
+        # Agregar códigos a los asientos de ajuste (si los tenemos)
+        if codigo_por_cuenta and adjust_blocks:
+            adjusted_blocks: List[Tuple[str, List[dict]]] = []
+            for title, lines in adjust_blocks:
+                new_lines: List[dict] = []
+                for ln in lines:
+                    cuenta = str(ln.get("Cuenta", "")).strip()
+                    if cuenta:
+                        key = _strip_accents_lower(cuenta)
+                        codigo = codigo_por_cuenta.get(key, "")
+                        if codigo:
+                            ln["Codigo"] = codigo
+                    new_lines.append(ln)
+                adjusted_blocks.append((title, new_lines))
+            adjust_blocks = adjusted_blocks
 
         # Cierres
         if choice != "Otra (ingresar manualmente)":
@@ -1044,6 +1081,21 @@ if uploaded:
             res_lines, pat_lines = _add_resultado_del_ejercicio(res_lines, pat_lines)
             cierre_resultado_lines = res_lines
             cierre_patrimonial_lines = pat_lines
+
+        # Agregar códigos a las cuentas de cierre (Resultado y Patrimonial)
+        if codigo_por_cuenta:
+            def _attach_codes(lines: List[dict]):
+                for ln in lines:
+                    cuenta = str(ln.get("Cuenta", "")).strip()
+                    if not cuenta:
+                        continue
+                    key = _strip_accents_lower(cuenta)
+                    codigo = codigo_por_cuenta.get(key, "")
+                    if codigo:
+                        ln["Codigo"] = codigo
+
+            _attach_codes(cierre_resultado_lines)
+            _attach_codes(cierre_patrimonial_lines)
 
         period_end_date = last_day(period_end[0], period_end[1])
 
