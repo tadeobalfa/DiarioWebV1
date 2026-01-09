@@ -27,6 +27,8 @@ import unicodedata
 import calendar
 from datetime import datetime, date
 from typing import List, Tuple, Optional, Dict
+from openpyxl import load_workbook
+
 
 import pandas as pd
 import streamlit as st
@@ -161,6 +163,28 @@ def _infer_year_from_headers(headers: List[str]) -> Optional[int]:
 # ==========================
 # Carga del balance
 # ==========================
+
+# ==========================
+# Lecturas rápidas / cacheadas (MEJORA PERFORMANCE)
+# ==========================
+
+@st.cache_data(show_spinner=False)
+def _get_sheet_names_cached(excel_bytes: bytes):
+    """
+    Fase 1 liviana: abre el Excel en modo read_only y devuelve SOLO nombres de hojas.
+    Mucho más rápido que pd.ExcelFile en archivos grandes.
+    """
+    wb = load_workbook(io.BytesIO(excel_bytes), read_only=True, data_only=True)
+    names = wb.sheetnames
+    wb.close()
+    return names
+
+@st.cache_data(show_spinner=False)
+def _read_excel_cached(excel_bytes: bytes, sheet_name: str, header=None, nrows=None):
+    """
+    Lectura cacheada para evitar releer la misma hoja cuando Streamlit re-ejecuta.
+    """
+    return pd.read_excel(io.BytesIO(excel_bytes), sheet_name=sheet_name, header=header, nrows=nrows, dtype=object)
 
 def load_balance_from_bytes(data: bytes, sheet_name: str):
     """
@@ -926,8 +950,13 @@ uploaded = st.file_uploader("Subí tu Excel (.xlsx)", type=["xlsx"])
 
 if uploaded:
     excel_bytes = uploaded.read()
-    xls = pd.ExcelFile(io.BytesIO(excel_bytes))
-    sheet_names = xls.sheet_names
+
+    # === FASE 1 (rápida): SOLO nombres de pestañas ===
+    try:
+        sheet_names = _get_sheet_names_cached(excel_bytes)
+    except Exception as e:
+        st.error(f"No se pudo leer el archivo Excel: {e}")
+        st.stop()
 
     col1, col2 = st.columns(2)
     with col1:
@@ -947,9 +976,9 @@ if uploaded:
     st.subheader("3) Indicar columna de SALDOS REEXPRESADOS")
     detected_cols = []
     try:
-        df_tmp_raw = pd.read_excel(io.BytesIO(excel_bytes), sheet_name=hoja_balance, header=None)
+        df_tmp_raw = _read_excel_cached(excel_bytes, hoja_balance, header=None)
         hdr = find_header_row(df_tmp_raw)
-        df_hdr = pd.read_excel(io.BytesIO(excel_bytes), sheet_name=hoja_balance, header=hdr, nrows=0)
+        df_hdr = _read_excel_cached(excel_bytes, hoja_balance, header=hdr, nrows=0)
         detected_cols = list(df_hdr.columns)
     except Exception:
         pass
@@ -1066,9 +1095,10 @@ if uploaded:
             real_col = detected_cols[sel_index] if sel_index < len(detected_cols) else None
         else:
             real_col = _pick_reexpresado_column(
-                pd.read_excel(io.BytesIO(excel_bytes), sheet_name=hoja_balance, header=header_row),
+                _read_excel_cached(excel_bytes, hoja_balance, header=header_row),
                 manual_input
             )
+
 
         cierre_resultado_lines: List[dict] = []
         cierre_patrimonial_lines: List[dict] = []
