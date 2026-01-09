@@ -18,6 +18,11 @@
 #     * Configuración 1 (Balances sin Sistema): título debajo del asiento (col. C).
 #     * Configuración 2 (Balances con Sistema): título en col. D en cada línea,
 #       y ahora CÓDIGO de cuenta en col. B (Mayor sin cambios).
+#
+# MEJORA PERFORMANCE (REAL):
+# - Guardar el XLSX subido a disco (temp) UNA sola vez y luego leer por PATH.
+#   Evita re-hashear MBs y re-leer bytes gigantes en cada rerun de Streamlit.
+# - No cambia nada del procesamiento ni del formato de salida.
 # ------------------------------------------------------------
 
 import io
@@ -29,6 +34,8 @@ from datetime import datetime, date
 from typing import List, Tuple, Optional, Dict
 from openpyxl import load_workbook
 
+import tempfile
+import os
 
 import pandas as pd
 import streamlit as st
@@ -161,44 +168,51 @@ def _infer_year_from_headers(headers: List[str]) -> Optional[int]:
     return None
 
 # ==========================
-# Carga del balance
-# ==========================
-
-# ==========================
-# Lecturas rápidas / cacheadas (MEJORA PERFORMANCE)
+# Lecturas optimizadas por PATH (MEJORA PERFORMANCE REAL)
 # ==========================
 
 @st.cache_data(show_spinner=False)
-def _get_sheet_names_cached(excel_bytes: bytes):
+def _get_sheet_names_cached(path_xlsx: str):
     """
-    Fase 1 liviana: abre el Excel en modo read_only y devuelve SOLO nombres de hojas.
-    Mucho más rápido que pd.ExcelFile en archivos grandes.
+    Fase 1 liviana: abre el Excel y devuelve SOLO nombres de hojas.
     """
-    wb = load_workbook(io.BytesIO(excel_bytes), read_only=True, data_only=True)
+    wb = load_workbook(path_xlsx, read_only=True, data_only=True)
     names = wb.sheetnames
     wb.close()
     return names
 
 @st.cache_data(show_spinner=False)
-def _read_excel_cached(excel_bytes: bytes, sheet_name: str, header=None, nrows=None):
+def _read_excel_cached(
+    path_xlsx: str,
+    sheet_name: str,
+    header=None,
+    nrows=None,
+    usecols=None
+):
     """
-    Lectura cacheada para evitar releer la misma hoja cuando Streamlit re-ejecuta.
+    Lectura cacheada por PATH (no por bytes), mucho más estable y rápida en reruns.
     """
-    return pd.read_excel(io.BytesIO(excel_bytes), sheet_name=sheet_name, header=header, nrows=nrows, dtype=object)
+    return pd.read_excel(
+        path_xlsx,
+        sheet_name=sheet_name,
+        header=header,
+        nrows=nrows,
+        usecols=usecols,
+        dtype=object,
+        engine="openpyxl"
+    )
 
-def load_balance_from_bytes(data: bytes, sheet_name: str):
+def load_balance_from_path(path_xlsx: str, sheet_name: str):
     """
     Devuelve:
       df, header_row, opening_col, ordered_months [(y,m,col)],
       account_col (DESCRIPCION), code_col (opcional),
       empresa_raw, period_start (y,m), period_end (y,m)
     """
-    buff = io.BytesIO(data)
-    df_raw = pd.read_excel(buff, sheet_name=sheet_name, header=None, dtype=object)
+    df_raw = _read_excel_cached(path_xlsx, sheet_name, header=None)
     header_row = find_header_row(df_raw)
 
-    buff.seek(0)
-    df = pd.read_excel(buff, sheet_name=sheet_name, header=header_row, dtype=object)
+    df = _read_excel_cached(path_xlsx, sheet_name, header=header_row)
     df.columns = [str(c).strip() for c in df.columns]
 
     all_cols = list(df.columns)
@@ -206,8 +220,6 @@ def load_balance_from_bytes(data: bytes, sheet_name: str):
     non_month = [c for c in all_cols if c not in months_like]
 
     # Detectar columna de descripción y código:
-    # - descripción: contiene "descrip", "concepto", "detalle"
-    # - código: contiene "cuenta", "codigo", "cód."
     account_col = non_month[0] if non_month else all_cols[0]
     code_col = None
 
@@ -215,14 +227,9 @@ def load_balance_from_bytes(data: bytes, sheet_name: str):
         s = _strip_accents_lower(c)
         if any(k in s for k in ("descrip", "concepto", "detalle")):
             account_col = c
-        if any(k in s for k in ("cuenta", "codigo", "cod " , "cod.")):
-            # solo tomamos como código si no se marcó como descripción
+        if any(k in s for k in ("cuenta", "codigo", "cod ", "cod.")):
             if code_col is None:
                 code_col = c
-
-    # Si no encontramos descripción explícita pero hay CUENTA/DESCRIPCIÓN
-    # estilo sistema (CUENTA / DESCRIPCION), account_col ya será DESCRIPCION
-    # y code_col será CUENTA (como en tu screenshot).
 
     opening_col = None
     for c in all_cols:
@@ -232,7 +239,7 @@ def load_balance_from_bytes(data: bytes, sheet_name: str):
     if opening_col is None:
         for c in all_cols:
             s = _strip_accents_lower(c)
-            if "saldo" in s and any(t in s for t in ("inicio","inicial","apertura")):
+            if "saldo" in s and any(t in s for t in ("inicio", "inicial", "apertura")):
                 opening_col = c
                 break
 
@@ -490,9 +497,12 @@ def _marker_kind(ws, row_idx: int) -> str:
             return 'exclude'
     return 'none'
 
-def read_adjust_blocks_from_bytes(data: bytes, sheet_name: Optional[str]) -> List[Tuple[str, List[dict]]]:
-    from openpyxl import load_workbook
-    wb = load_workbook(io.BytesIO(data), data_only=True)
+def read_adjust_blocks_from_path(path_xlsx: str, sheet_name: Optional[str]) -> List[Tuple[str, List[dict]]]:
+    """
+    Lee AJUSTES desde un XLSX por PATH.
+    Nota: NO usamos read_only acá porque necesitamos merged_cells para detectar colores correctamente.
+    """
+    wb = load_workbook(path_xlsx, data_only=True)
 
     ws = None
     if sheet_name and sheet_name in wb.sheetnames:
@@ -503,6 +513,7 @@ def read_adjust_blocks_from_bytes(data: bytes, sheet_name: Optional[str]) -> Lis
                 ws = wb[c]
                 break
         if ws is None:
+            wb.close()
             return []
 
     blocks: List[Tuple[str, List[dict]]] = []
@@ -555,6 +566,7 @@ def read_adjust_blocks_from_bytes(data: bytes, sheet_name: Optional[str]) -> Lis
     if include_mode and current:
         blocks.append((title or "Asientos de Ajuste", current))
 
+    wb.close()
     return blocks
 
 # ==========================
@@ -949,11 +961,33 @@ st.subheader("1) Cargar archivo y elegir hojas")
 uploaded = st.file_uploader("Subí tu Excel (.xlsx)", type=["xlsx"])
 
 if uploaded:
-    excel_bytes = uploaded.read()
+    # Guardar el archivo UNA sola vez (temp) y luego trabajar por PATH
+    if (
+        "xlsx_path" not in st.session_state
+        or st.session_state.get("xlsx_name") != uploaded.name
+        or st.session_state.get("xlsx_size") != uploaded.size
+    ):
+        # limpiar el anterior si existía
+        old_path = st.session_state.get("xlsx_path")
+        if old_path and os.path.exists(old_path):
+            try:
+                os.remove(old_path)
+            except Exception:
+                pass
+
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx")
+        tmp.write(uploaded.getbuffer())
+        tmp.close()
+
+        st.session_state["xlsx_path"] = tmp.name
+        st.session_state["xlsx_name"] = uploaded.name
+        st.session_state["xlsx_size"] = uploaded.size
+
+    input_path = st.session_state["xlsx_path"]
 
     # === FASE 1 (rápida): SOLO nombres de pestañas ===
     try:
-        sheet_names = _get_sheet_names_cached(excel_bytes)
+        sheet_names = _get_sheet_names_cached(input_path)
     except Exception as e:
         st.error(f"No se pudo leer el archivo Excel: {e}")
         st.stop()
@@ -976,9 +1010,9 @@ if uploaded:
     st.subheader("3) Indicar columna de SALDOS REEXPRESADOS")
     detected_cols = []
     try:
-        df_tmp_raw = _read_excel_cached(excel_bytes, hoja_balance, header=None)
+        df_tmp_raw = _read_excel_cached(input_path, hoja_balance, header=None)
         hdr = find_header_row(df_tmp_raw)
-        df_hdr = _read_excel_cached(excel_bytes, hoja_balance, header=hdr, nrows=0)
+        df_hdr = _read_excel_cached(input_path, hoja_balance, header=hdr, nrows=0)
         detected_cols = list(df_hdr.columns)
     except Exception:
         pass
@@ -1005,7 +1039,7 @@ if uploaded:
         manual_input = st.text_input("Ingresá la **letra de columna** (ej. U) o el **nombre exacto** del encabezado:")
 
     try:
-        # Balance base
+        # Balance base (por PATH)
         (df_bal,
          header_row,
          opening_col,
@@ -1014,7 +1048,7 @@ if uploaded:
          code_col,
          empresa_raw,
          period_start,
-         period_end) = load_balance_from_bytes(excel_bytes, hoja_balance)
+         period_end) = load_balance_from_path(input_path, hoja_balance)
 
         empresa = empresa_raw or uploaded.name.rsplit(".", 1)[0]
 
@@ -1071,7 +1105,7 @@ if uploaded:
         # Ajustes
         adjust_blocks: List[Tuple[str, List[dict]]] = []
         if hoja_ajustes != "Ninguna":
-            adjust_blocks = read_adjust_blocks_from_bytes(excel_bytes, sheet_name=hoja_ajustes)
+            adjust_blocks = read_adjust_blocks_from_path(input_path, sheet_name=hoja_ajustes)
 
         # Agregar códigos a los asientos de ajuste (si los tenemos)
         if codigo_por_cuenta and adjust_blocks:
@@ -1094,11 +1128,8 @@ if uploaded:
             sel_index = select_options.index(choice)
             real_col = detected_cols[sel_index] if sel_index < len(detected_cols) else None
         else:
-            real_col = _pick_reexpresado_column(
-                _read_excel_cached(excel_bytes, hoja_balance, header=header_row),
-                manual_input
-            )
-
+            df_for_pick = _read_excel_cached(input_path, hoja_balance, header=header_row)
+            real_col = _pick_reexpresado_column(df_for_pick, manual_input)
 
         cierre_resultado_lines: List[dict] = []
         cierre_patrimonial_lines: List[dict] = []
